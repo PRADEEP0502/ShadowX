@@ -48,4 +48,18 @@ class ApiService {
 
     return body is Map<String, dynamic> ? body : {'message': 'Login failed'};
   }
+
+  static Future<List<dynamic>> searchUsers({required String username}) async {
+    final uri = Uri.parse(
+      '${ApiConstants.baseUrl}/users/search',
+    ).replace(queryParameters: {'username': username});
+
+    final response = await http.get(uri);
+    if (response.statusCode >= 400) {
+      return [];
+    }
+
+    final body = jsonDecode(response.body);
+    return body is List ? body : [];
+  }
 }

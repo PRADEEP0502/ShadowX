@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../services/api_service.dart';
+import '../services/auth_storage.dart';
 import '../widgets/app_text_field.dart';
 import '../widgets/primary_button.dart';
 
@@ -60,6 +61,10 @@ class _LoginScreenState extends State<LoginScreen> {
                     if (!mounted) return;
 
                     if (result['access_token'] != null) {
+                      final username = result['username']?.toString();
+                      if (username != null && username.isNotEmpty) {
+                        await AuthStorage.saveUsername(username);
+                      }
                       Navigator.pushReplacementNamed(context, '/home');
                     } else {
                       ScaffoldMessenger.of(context).showSnackBar(

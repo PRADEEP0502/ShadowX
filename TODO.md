@@ -1,17 +1,28 @@
-# TODO
+# TODO - ShadowChat X WhatsApp-style behavior
 
-## Frontend: Connect Register/Login to FastAPI backend
-- [ ] Update `frontend/pubspec.yaml` to add `http: ^1.2.1`
-- [ ] Create `frontend/lib/core/constants/api_constants.dart` with `baseUrl`
-- [ ] Create `frontend/lib/services/api_service.dart` implementing `register()` and `login()`
-- [ ] Update `frontend/lib/screens/register_screen.dart` button to call `ApiService.register()` and handle success/failure
-- [ ] Update `frontend/lib/screens/login_screen.dart` button to call `ApiService.login()` and handle success/failure
-- [ ] Run `cd frontend && flutter pub get`
-- [ ] Run `cd frontend && flutter analyze`
-- [ ] Manual test: register (Mongo save) and login (navigate to home)
+## Backend
+- [ ] Extend `GET /conversations/{username}` response to include `unread_count` for that user per other participant.
 
-## (If needed later)
-- [ ] Fix CORS for Flutter web by adding FastAPI CORS middleware
+## Frontend - Models/Services
+- [ ] Update `Conversation` model to include `unreadCount`.
+- [ ] Update `ConversationService` parsing.
+- [ ] Implement search UI: TextField triggers `GET /users/search?username=query` via `ApiService.searchUsers`.
 
+## Frontend - Home UI
+- [ ] Home list shows only real conversations from `/conversations/{username}`.
+- [ ] Add unread message badge (based on `unreadCount`).
+- [ ] Real-time conversation updates: update last message/time and unread badge on WS events.
 
+## Frontend - Chat UI
+- [ ] Fix sender/receiver visibility so only sender/receiver see content (remove “From/To” metadata).
+- [ ] Mark received messages as seen on open (server supports mark-seen by `_id`).
+
+## Local Notifications
+- [ ] Add `flutter_local_notifications` dependency.
+- [ ] Create `ChatVisibility` service to let home know which chat is currently open.
+- [ ] When WS receives a new message for a chat that isn't open, show local notification to receiver.
+
+## Quality
+- [ ] Remove/ignore any dummy/mock behavior.
+- [ ] Ensure no hardcoded usernames anywhere.
 
