@@ -4,19 +4,21 @@ import '../services/api_service.dart';
 import '../widgets/app_text_field.dart';
 import '../widgets/primary_button.dart';
 
-class LoginScreen extends StatefulWidget {
-  const LoginScreen({super.key});
+class RegisterScreen extends StatefulWidget {
+  const RegisterScreen({super.key});
 
   @override
-  State<LoginScreen> createState() => _LoginScreenState();
+  State<RegisterScreen> createState() => _RegisterScreenState();
 }
 
-class _LoginScreenState extends State<LoginScreen> {
+class _RegisterScreenState extends State<RegisterScreen> {
+  final _nameController = TextEditingController();
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
 
   @override
   void dispose() {
+    _nameController.dispose();
     _emailController.dispose();
     _passwordController.dispose();
     super.dispose();
@@ -25,7 +27,7 @@ class _LoginScreenState extends State<LoginScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Login')),
+      appBar: AppBar(title: const Text('Register')),
       body: SafeArea(
         child: Padding(
           padding: const EdgeInsets.all(16),
@@ -34,12 +36,14 @@ class _LoginScreenState extends State<LoginScreen> {
             children: [
               const SizedBox(height: 16),
               Text(
-                'Welcome back',
+                'Create your account',
                 style: Theme.of(context).textTheme.headlineMedium,
               ),
               const SizedBox(height: 6),
-              const Text('Login to continue to your chats.'),
+              const Text('Register to start chatting.'),
               const SizedBox(height: 24),
+              AppTextField(controller: _nameController, label: 'Name'),
+              const SizedBox(height: 12),
               AppTextField(controller: _emailController, label: 'Email'),
               const SizedBox(height: 12),
               AppTextField(
@@ -49,35 +53,38 @@ class _LoginScreenState extends State<LoginScreen> {
               ),
               const SizedBox(height: 18),
               PrimaryButton(
-                text: 'Login',
+                text: 'Register',
                 onPressed: () async {
                   try {
-                    final result = await ApiService.login(
+                    final result = await ApiService.register(
+                      username: _nameController.text.trim(),
                       email: _emailController.text.trim(),
                       password: _passwordController.text,
                     );
 
                     if (!mounted) return;
 
-                    if (result['access_token'] != null) {
-                      Navigator.pushReplacementNamed(context, '/home');
-                    } else {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('Login Failed')),
-                      );
-                    }
-                  } catch (e) {
+                    final message = result['message']?.toString() ?? 'Register';
                     if (!mounted) return;
                     ScaffoldMessenger.of(
                       context,
-                    ).showSnackBar(SnackBar(content: Text('Login Failed: $e')));
+                    ).showSnackBar(SnackBar(content: Text(message)));
+
+                    if (!mounted) return;
+                    Navigator.of(context).pushReplacementNamed('/login');
+                  } catch (e) {
+                    if (!mounted) return;
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text('Register failed: $e')),
+                    );
                   }
                 },
               ),
               const SizedBox(height: 12),
               TextButton(
-                onPressed: () => Navigator.of(context).pushNamed('/register'),
-                child: const Text('No account? Register'),
+                onPressed: () =>
+                    Navigator.of(context).pushReplacementNamed('/login'),
+                child: const Text('Already have an account? Login'),
               ),
             ],
           ),
