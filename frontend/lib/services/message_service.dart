@@ -10,10 +10,12 @@ class ChatMessage {
   final String message;
   final DateTime createdAt;
 
-  // Vanish mode fields
-  final String status; // "sent" | "seen" | ...
+  // WhatsApp status fields
+  final String status; // "sent" | "delivered" | "seen"
   final DateTime? seenAt;
-  final String? id; // optional if backend returns it in the future
+
+  // Mongo id
+  final String? id;
 
   const ChatMessage({
     required this.sender,

@@ -9,34 +9,33 @@ import '../screens/premium_input_card.dart';
 import '../widgets/premium_gradient_button.dart';
 import '../widgets/premium_text_field.dart';
 
-class RegisterScreen extends StatefulWidget {
-  const RegisterScreen({super.key});
+class ForgotPasswordScreen extends StatefulWidget {
+  const ForgotPasswordScreen({super.key});
 
   @override
-  State<RegisterScreen> createState() => _RegisterScreenState();
+  State<ForgotPasswordScreen> createState() => _ForgotPasswordScreenState();
 }
 
-class _RegisterScreenState extends State<RegisterScreen> {
-  final _nameController = TextEditingController();
+class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
   final _emailController = TextEditingController();
-  final _passwordController = TextEditingController();
   final _otpController = TextEditingController();
+  final _newPasswordController = TextEditingController();
+  final _confirmPasswordController = TextEditingController();
 
   bool _isLoading = false;
   bool _otpSent = false;
-  String? _otpHint; // shown when email delivery fails (dev mode)
+  String? _otpHint;
   bool _emailSent = true;
 
-  // Countdown for OTP expiry (5 min = 300s)
   int _secondsLeft = 300;
   Timer? _countdownTimer;
 
   @override
   void dispose() {
-    _nameController.dispose();
     _emailController.dispose();
-    _passwordController.dispose();
     _otpController.dispose();
+    _newPasswordController.dispose();
+    _confirmPasswordController.dispose();
     _countdownTimer?.cancel();
     super.dispose();
   }
@@ -47,11 +46,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
     _countdownTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (!mounted) return;
       setState(() {
-        if (_secondsLeft > 0) {
-          _secondsLeft--;
-        } else {
-          _countdownTimer?.cancel();
-        }
+        if (_secondsLeft > 0) _secondsLeft--;
       });
     });
   }
@@ -63,26 +58,15 @@ class _RegisterScreenState extends State<RegisterScreen> {
   }
 
   Future<void> _sendOtp() async {
-    final name = _nameController.text.trim();
     final email = _emailController.text.trim();
-    final password = _passwordController.text;
-
-    if (name.isEmpty || email.isEmpty || password.isEmpty) {
-      _showSnack('Please fill in all fields');
-      return;
-    }
-    if (password.length < 6) {
-      _showSnack('Password must be at least 6 characters');
+    if (email.isEmpty) {
+      _showSnack('Please enter your email');
       return;
     }
 
     setState(() => _isLoading = true);
     try {
-      final result = await ApiService.sendRegisterOtp(
-        username: name,
-        email: email,
-        password: password,
-      );
+      final result = await ApiService.sendForgotOtp(email: email);
       if (!mounted) return;
       final hint = result['otp_hint']?.toString();
       final emailSent = result['email_sent'] as bool? ?? true;
@@ -91,7 +75,6 @@ class _RegisterScreenState extends State<RegisterScreen> {
         _otpSent = true;
         _otpHint = hint;
         _emailSent = emailSent;
-        // Auto-fill OTP if email failed (dev convenience)
         if (hint != null && !emailSent) {
           _otpController.text = hint;
         }
@@ -109,10 +92,25 @@ class _RegisterScreenState extends State<RegisterScreen> {
     }
   }
 
-  Future<void> _verifyOtp() async {
+  Future<void> _resetPassword() async {
     final otp = _otpController.text.trim();
+    final newPass = _newPasswordController.text;
+    final confirmPass = _confirmPasswordController.text;
+
     if (otp.length != 6) {
       _showSnack('Enter the 6-digit OTP');
+      return;
+    }
+    if (newPass.isEmpty || confirmPass.isEmpty) {
+      _showSnack('Please fill in both password fields');
+      return;
+    }
+    if (newPass != confirmPass) {
+      _showSnack('Passwords do not match');
+      return;
+    }
+    if (newPass.length < 6) {
+      _showSnack('Password must be at least 6 characters');
       return;
     }
     if (_secondsLeft <= 0) {
@@ -122,13 +120,14 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
     setState(() => _isLoading = true);
     try {
-      await ApiService.verifyRegisterOtp(
+      await ApiService.verifyForgotOtp(
         email: _emailController.text.trim(),
         otp: otp,
+        newPassword: newPass,
       );
       if (!mounted) return;
       setState(() => _isLoading = false);
-      _showSnack('Account created! Please login 🎉');
+      _showSnack('Password reset successfully! Please login 🎉');
       Navigator.of(context).pushReplacementNamed('/login');
     } catch (e) {
       if (!mounted) return;
@@ -155,7 +154,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
       backgroundColor: AppColors.amoledBlack,
       extendBodyBehindAppBar: true,
       appBar: AppBar(
-        title: const Text('Register'),
+        title: const Text('Forgot Password'),
         backgroundColor: Colors.transparent,
         leading: IconButton(
           icon: const Icon(Icons.arrow_back_rounded),
@@ -172,7 +171,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
                 child: PremiumInputCard(
                   child: AnimatedSwitcher(
                     duration: const Duration(milliseconds: 350),
-                    child: _otpSent ? _buildOtpStep() : _buildDetailsStep(),
+                    child: _otpSent ? _buildResetStep() : _buildEmailStep(),
                   ),
                 ),
               ),
@@ -183,33 +182,20 @@ class _RegisterScreenState extends State<RegisterScreen> {
     );
   }
 
-  Widget _buildDetailsStep() {
+  Widget _buildEmailStep() {
     return Column(
-      key: const ValueKey('details'),
+      key: const ValueKey('email'),
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         const SizedBox(height: 12),
-        _gradientTitle('Create your account'),
+        _gradientTitle('Forgot Password?'),
         const SizedBox(height: 8),
-        _subtitle('Join the premium messaging experience'),
+        _subtitle('Enter your registered email to receive a reset OTP'),
         const SizedBox(height: 32),
-        PremiumTextField(
-          controller: _nameController,
-          label: 'Username',
-          textInputAction: TextInputAction.next,
-        ),
-        const SizedBox(height: 16),
         PremiumTextField(
           controller: _emailController,
           label: 'Email',
           keyboardType: TextInputType.emailAddress,
-          textInputAction: TextInputAction.next,
-        ),
-        const SizedBox(height: 16),
-        PremiumTextField(
-          controller: _passwordController,
-          label: 'Password',
-          obscureText: true,
           textInputAction: TextInputAction.done,
         ),
         const SizedBox(height: 28),
@@ -223,7 +209,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
           onPressed: () =>
               Navigator.of(context).pushReplacementNamed('/login'),
           child: Text(
-            'Already have an account? Login',
+            'Back to Login',
             style: TextStyle(
               color: AppColors.primaryPurple,
               fontWeight: FontWeight.w600,
@@ -235,21 +221,21 @@ class _RegisterScreenState extends State<RegisterScreen> {
     );
   }
 
-  Widget _buildOtpStep() {
+  Widget _buildResetStep() {
     return Column(
-      key: const ValueKey('otp'),
+      key: const ValueKey('reset'),
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         const SizedBox(height: 12),
-        _gradientTitle('Verify your email'),
+        _gradientTitle('Reset Password'),
         const SizedBox(height: 8),
-        _subtitle('Enter the 6-digit OTP sent to\n${_emailController.text.trim()}'),
+        _subtitle('Enter the OTP sent to\n${_emailController.text.trim()}'),
         const SizedBox(height: 32),
         PremiumTextField(
           controller: _otpController,
           label: 'Enter OTP',
           keyboardType: TextInputType.number,
-          textInputAction: TextInputAction.done,
+          textInputAction: TextInputAction.next,
         ),
         if (_otpHint != null && !_emailSent) ...[
           const SizedBox(height: 10),
@@ -281,50 +267,54 @@ class _RegisterScreenState extends State<RegisterScreen> {
             ),
           ),
         ],
+        const SizedBox(height: 16),
+        PremiumTextField(
+          controller: _newPasswordController,
+          label: 'New Password',
+          obscureText: true,
+          textInputAction: TextInputAction.next,
+        ),
+        const SizedBox(height: 16),
+        PremiumTextField(
+          controller: _confirmPasswordController,
+          label: 'Confirm Password',
+          obscureText: true,
+          textInputAction: TextInputAction.done,
+        ),
         const SizedBox(height: 12),
-        // Countdown timer
         Center(
-          child: AnimatedSwitcher(
-            duration: const Duration(milliseconds: 300),
-            child: _secondsLeft > 0
-                ? Text(
-                    'OTP expires in $_countdownText',
-                    key: ValueKey(_secondsLeft),
-                    style: TextStyle(
-                      color: _secondsLeft < 60
-                          ? AppColors.errorRed
-                          : AppColors.primaryPurple,
-                      fontWeight: FontWeight.w600,
-                      fontSize: 14,
-                    ),
-                  )
-                : Text(
-                    'OTP expired',
-                    style: TextStyle(
-                      color: AppColors.errorRed,
-                      fontWeight: FontWeight.w600,
-                      fontSize: 14,
-                    ),
-                  ),
+          child: Text(
+            _secondsLeft > 0
+                ? 'OTP expires in $_countdownText'
+                : 'OTP expired',
+            style: TextStyle(
+              color: _secondsLeft > 0 && _secondsLeft >= 60
+                  ? AppColors.primaryPurple
+                  : AppColors.errorRed,
+              fontWeight: FontWeight.w600,
+              fontSize: 14,
+            ),
           ),
         ),
         const SizedBox(height: 24),
         PremiumGradientButton(
-          text: 'Verify & Create Account',
+          text: 'Reset Password',
           isLoading: _isLoading,
-          onPressed: _verifyOtp,
+          onPressed: _resetPassword,
         ),
         const SizedBox(height: 12),
         TextButton(
-          onPressed: _isLoading ? null : () {
-            setState(() {
-              _otpSent = false;
-              _otpController.clear();
-              _countdownTimer?.cancel();
-            });
-          },
+          onPressed: _isLoading
+              ? null
+              : () {
+                  setState(() {
+                    _otpSent = false;
+                    _otpController.clear();
+                    _countdownTimer?.cancel();
+                  });
+                },
           child: Text(
-            'Resend OTP / Change details',
+            'Resend OTP',
             style: TextStyle(
               color: AppColors.textSecondary,
               fontWeight: FontWeight.w500,

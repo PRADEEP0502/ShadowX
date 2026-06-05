@@ -64,3 +64,7 @@ def users_collection():
 def messages_collection():
     return _get_db()["messages"]
 
+
+def otps_collection():
+    return _get_db()["otps"]
+

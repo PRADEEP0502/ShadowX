@@ -13,16 +13,12 @@ def disconnect(username):
     active_connections.pop(username, None)
 
 async def send_message(receiver, message: dict):
-    """Send a message payload to a connected websocket user.
-
-    The caller should ensure the payload contains:
-      {"status": "sent", "seen_at": null}
-    when it is a newly-sent vanish message.
-    """
+    """Send a message/status payload to a connected websocket user."""
     if receiver in active_connections:
         await active_connections[receiver].send_json(message)
         return True
     return False
+
 
 
 def get_online_users():

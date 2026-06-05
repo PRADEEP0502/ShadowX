@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
 
-import 'core/constants/app_theme.dart';
+import 'theme/app_theme.dart';
 import 'screens/chat_screen.dart';
+import 'screens/forgot_password_screen.dart';
 import 'screens/home_screen.dart';
 import 'screens/login_screen.dart';
 import 'screens/register_screen.dart';
@@ -19,12 +20,13 @@ class MyApp extends StatelessWidget {
     return MaterialApp(
       title: 'ShadowChat X',
       debugShowCheckedModeBanner: false,
-      theme: AppTheme.theme(),
+      theme: AppTheme.dark(),
       initialRoute: '/splash',
       routes: {
         '/splash': (_) => const SplashScreen(),
         '/login': (_) => const LoginScreen(),
         '/register': (_) => const RegisterScreen(),
+        '/forgot-password': (_) => const ForgotPasswordScreen(),
         '/home': (_) => const HomeScreen(),
         '/chat': (_) => const ChatScreen(),
       },

@@ -2,13 +2,16 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_windowmanager/flutter_windowmanager.dart';
+import 'package:intl/intl.dart';
 
+import '../services/active_chat_tracker.dart';
 import '../services/auth_storage.dart';
 import '../services/message_service.dart';
 import '../services/websocket_service.dart';
-
-// Screenshot protection (FLAG_SECURE) is best-effort and primarily works on Android.
-// If you build for iOS/desktop, verify platform support in flutter_windowmanager docs.
+import '../theme/app_colors.dart';
+import '../theme/app_text_styles.dart';
+import '../widgets/premium_avatar.dart';
+import '../widgets/premium_chat_bubble.dart';
 
 class ChatScreen extends StatefulWidget {
   const ChatScreen({super.key});
@@ -19,14 +22,11 @@ class ChatScreen extends StatefulWidget {
 
 class _ChatScreenState extends State<ChatScreen> {
   late final String _userName;
+  String _myUsername = '';
   WebSocketService? _ws;
   StreamSubscription<WSChatEvent>? _wsSub;
 
   final _messageController = TextEditingController();
-
-  Future<String> _getMyUsername() async {
-    return (await AuthStorage.getUsername()) ?? '';
-  }
 
   bool _loading = true;
   String? _error;
@@ -38,17 +38,30 @@ class _ChatScreenState extends State<ChatScreen> {
   void didChangeDependencies() {
     super.didChangeDependencies();
     final args = ModalRoute.of(context)?.settings.arguments;
-    final name = (args is Map && args['userName'] is String)
+    _userName = (args is Map && args['userName'] is String)
         ? args['userName'] as String
         : 'User';
-    _userName = name;
+    ActiveChatTracker.activeUser = _userName;
+  }
+
+  @override
+  void initState() {
+    super.initState();
+
+    FlutterWindowManager.addFlags(FlutterWindowManager.FLAG_SECURE);
+
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      _myUsername = (await AuthStorage.getUsername()) ?? '';
+      await _initWebSocket();
+      await _loadMessages();
+    });
   }
 
   @override
   void dispose() {
+    ActiveChatTracker.activeUser = null;
     _ticker?.cancel();
     _wsSub?.cancel();
-    _ws?.disconnect();
     _messageController.dispose();
     super.dispose();
   }
@@ -67,21 +80,17 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   bool _isExpired(ChatMessage m) {
-    if (m.status != 'seen') return false;
-    final remaining = _remainingSeconds(m);
-    return remaining <= 0;
+    if (m.status != 'seen' || m.seenAt == null) return false;
+    final diff = DateTime.now().toUtc().difference(m.seenAt!.toUtc());
+    return diff.inSeconds >= 60;
   }
 
   Future<void> _markReceivedAsSeen() async {
-    // Mark messages as seen when chat opens.
-    // We only mark messages that are received from the other user.
-    // Backend requires message_id, but our current GET excludes _id.
-    // So with current backend, we can only do UI vanish locally.
-    // Once backend returns _id in GET, this will work.
-    final me = await _getMyUsername();
-    if (me.isEmpty) return;
+    if (_myUsername.isEmpty) return;
 
-    final toMark = _messages.where((m) => m.sender != me && m.status != 'seen');
+    final toMark = _messages.where(
+      (m) => m.sender != _myUsername && m.status != 'seen',
+    );
 
     for (final m in toMark) {
       final id = m.id;
@@ -96,8 +105,7 @@ class _ChatScreenState extends State<ChatScreen> {
       _error = null;
     });
 
-    final me = await _getMyUsername();
-    if (me.isEmpty) {
+    if (_myUsername.isEmpty) {
       if (!mounted) return;
       setState(() {
         _loading = false;
@@ -106,7 +114,7 @@ class _ChatScreenState extends State<ChatScreen> {
     }
 
     final msgs = await MessageService.fetchMessages(
-      user1: me,
+      user1: _myUsername,
       user2: _userName,
     );
 
@@ -119,73 +127,61 @@ class _ChatScreenState extends State<ChatScreen> {
       _loading = false;
     });
 
-    // Start countdown ticker (1Hz) for seen messages.
     _ticker?.cancel();
     _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
       if (!mounted) return;
       setState(() {
-        // Remove expired messages immediately from UI.
         _messages.removeWhere((m) => _isExpired(m));
       });
     });
 
-    // Best-effort mark-as-seen.
     try {
       await _markReceivedAsSeen();
-    } catch (e) {
-      // Ignore to keep UI working even if backend doesn't return ids.
-    }
-  }
-
-  @override
-  void initState() {
-    super.initState();
-
-    // Prevent screenshots/screen recording (Android best-effort).
-    // Add flags as early as possible.
-    FlutterWindowManager.addFlags(FlutterWindowManager.FLAG_SECURE);
-
-    WidgetsBinding.instance.addPostFrameCallback((_) async {
-      await _initWebSocket();
-      await _loadMessages();
-    });
+    } catch (_) {}
   }
 
   Future<void> _initWebSocket() async {
-    _ws?.disconnect();
     await _wsSub?.cancel();
 
-    final me = await _getMyUsername();
-    if (me.isEmpty) return;
+    if (_myUsername.isEmpty) return;
 
-    _ws = WebSocketService(username: me);
+    _ws = WebSocketService(username: _myUsername);
     await _ws!.connect();
 
     _wsSub = _ws!.events.listen((event) async {
-      // Only show events related to this chat screen pair.
-      final me = await _getMyUsername();
-      if (me.isEmpty) return;
-
       final belongsToChat =
-          (event.sender == _userName && event.receiver == me) ||
-          (event.sender == me && event.receiver == _userName);
+          (event.sender == _userName && event.receiver == _myUsername) ||
+          (event.sender == _myUsername && event.receiver == _userName);
       if (!belongsToChat) return;
+
+      if (event.sender != _myUsername && event.id.isNotEmpty) {
+        try {
+          await MessageService.markMessageSeen(messageId: event.id);
+        } catch (_) {}
+      }
 
       if (!mounted) return;
 
-      // Append immediately for UX.
       setState(() {
-        _messages.add(
-          ChatMessage(
-            sender: event.sender,
-            receiver: event.receiver,
-            message: event.message,
-            createdAt: event.createdAt,
-            status: 'sent',
-            seenAt: null,
-            id: null,
-          ),
+        final idx = (event.id.isNotEmpty)
+            ? _messages.indexWhere((m) => m.id == event.id)
+            : -1;
+
+        final newMessage = ChatMessage(
+          id: event.id.isNotEmpty ? event.id : null,
+          sender: event.sender,
+          receiver: event.receiver,
+          message: event.message,
+          createdAt: event.createdAt,
+          status: event.status,
+          seenAt: event.seenAt,
         );
+
+        if (idx >= 0) {
+          _messages[idx] = newMessage;
+        } else {
+          _messages.add(newMessage);
+        }
       });
     });
   }
@@ -194,13 +190,9 @@ class _ChatScreenState extends State<ChatScreen> {
     final text = _messageController.text.trim();
     if (text.isEmpty) return;
 
-    final receiver = _userName;
-
     try {
-      // Send via WebSocket (real-time) and let backend persist + broadcast.
+      final receiver = _userName;
       _ws?.send(receiver: receiver, message: text);
-
-      // Immediately clear for UX.
       _messageController.clear();
     } catch (e) {
       if (!mounted) return;
@@ -210,154 +202,160 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
+  String _formatTime(DateTime dt) {
+    return DateFormat('HH:mm').format(dt);
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: Text(_userName)),
-      body: SafeArea(
-        child: Column(
+      backgroundColor: AppColors.amoledBlack,
+      appBar: AppBar(
+        backgroundColor: Colors.transparent,
+        title: Row(
           children: [
-            Expanded(
-              child: _loading
-                  ? const Center(child: CircularProgressIndicator())
-                  : _error != null
-                  ? Center(
-                      child: Text(
-                        _error!,
-                        style: const TextStyle(color: Colors.redAccent),
-                        textAlign: TextAlign.center,
-                      ),
-                    )
-                  : _messages.isEmpty
-                  ? const Center(child: Text('No messages yet'))
-                  : ListView.builder(
-                      padding: const EdgeInsets.all(16),
-                      itemCount: _messages.length,
-                      itemBuilder: (context, index) {
-                        final m = _messages[index];
-                        // Determine UI alignment based on logged-in username.
-                        // If username isn't loaded yet, we fallback to sender comparison.
-                        final isMe = m.sender == m.sender;
-
-                        final align = isMe
-                            ? Alignment.centerRight
-                            : Alignment.centerLeft;
-                        final color = isMe
-                            ? Theme.of(context).colorScheme.primary
-                            : const Color(0xFF1A1A1A);
-                        final textColor = isMe ? Colors.black : Colors.white;
-
-                        final created = m.createdAt.toLocal();
-                        final createdStr =
-                            '${created.year.toString().padLeft(4, '0')}-${created.month.toString().padLeft(2, '0')}-${created.day.toString().padLeft(2, '0')} ${created.hour.toString().padLeft(2, '0')}:${created.minute.toString().padLeft(2, '0')}';
-
-                        final remaining = _remainingSeconds(m);
-                        final showTimer = m.status == 'seen' && remaining > 0;
-
-                        return Align(
-                          alignment: align,
-                          child: Container(
-                            margin: const EdgeInsets.symmetric(vertical: 6),
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 14,
-                              vertical: 10,
-                            ),
-                            constraints: const BoxConstraints(maxWidth: 320),
-                            decoration: BoxDecoration(
-                              color: color,
-                              borderRadius: BorderRadius.circular(16),
-                            ),
-                            child: DefaultTextStyle.merge(
-                              style: TextStyle(color: textColor),
-                              child: Column(
-                                crossAxisAlignment: isMe
-                                    ? CrossAxisAlignment.end
-                                    : CrossAxisAlignment.start,
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Text(
-                                    'From: ${m.sender}  →  To: ${m.receiver}',
-                                    style: const TextStyle(fontSize: 12),
-                                  ),
-                                  const SizedBox(height: 6),
-                                  Text(
-                                    m.message,
-                                    style: const TextStyle(fontSize: 14),
-                                  ),
-                                  const SizedBox(height: 6),
-                                  if (showTimer)
-                                    Align(
-                                      alignment: isMe
-                                          ? Alignment.centerRight
-                                          : Alignment.centerLeft,
-                                      child: Container(
-                                        padding: const EdgeInsets.symmetric(
-                                          horizontal: 10,
-                                          vertical: 4,
-                                        ),
-                                        decoration: BoxDecoration(
-                                          color: isMe
-                                              ? Colors.black26
-                                              : Colors.white10,
-                                          borderRadius: BorderRadius.circular(
-                                            999,
-                                          ),
-                                        ),
-                                        child: Text(
-                                          '${remaining}s',
-                                          style: TextStyle(
-                                            fontSize: 12,
-                                            fontWeight: FontWeight.w600,
-                                            color: textColor,
-                                          ),
-                                        ),
-                                      ),
-                                    ),
-                                  const SizedBox(height: 6),
-                                  Text(
-                                    'Created: $createdStr',
-                                    style: const TextStyle(
-                                      fontSize: 12,
-                                      color: Colors.white70,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                        );
-                      },
-                    ),
-            ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: TextField(
-                      controller: _messageController,
-                      style: const TextStyle(color: Colors.white),
-                      decoration: const InputDecoration(
-                        hintText: 'Type a message...',
-                        border: InputBorder.none,
-                      ),
-                      onSubmitted: (_) => _send(),
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  FloatingActionButton.extended(
-                    onPressed: _send,
-                    backgroundColor: Theme.of(context).colorScheme.primary,
-                    foregroundColor: Colors.black,
-                    label: const Text('Send'),
-                    icon: const Icon(Icons.send),
-                  ),
-                ],
-              ),
-            ),
+            PremiumAvatar(username: _userName, radius: 18),
+            const SizedBox(width: 12),
+            Text(_userName, style: AppTextStyles.headlineMedium),
           ],
         ),
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back_rounded),
+          onPressed: () => Navigator.of(context).pop(),
+        ),
+      ),
+      body: Stack(
+        children: [
+          Positioned.fill(child: CustomPaint(painter: _PatternPainter())),
+          Column(
+            children: [
+              Expanded(
+                child: _loading
+                    ? const Center(
+                        child: CircularProgressIndicator(
+                          color: AppColors.primaryPurple,
+                        ),
+                      )
+                    : _error != null
+                    ? Center(
+                        child: Text(
+                          _error!,
+                          style: TextStyle(color: AppColors.errorRed),
+                          textAlign: TextAlign.center,
+                        ),
+                      )
+                    : _messages.isEmpty
+                    ? Center(
+                        child: Text(
+                          'No messages yet',
+                          style: TextStyle(color: AppColors.textSecondary),
+                        ),
+                      )
+                    : ListView.builder(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 16,
+                        ),
+                        itemCount: _messages.length,
+                        itemBuilder: (context, index) {
+                          final m = _messages[index];
+                          final finalIsMe = m.sender == _myUsername;
+                          final remaining = _remainingSeconds(m);
+                          final showTimer = m.status == 'seen' && remaining > 0;
+
+                          return PremiumChatBubble(
+                            message: m.message,
+                            isMe: finalIsMe,
+                            time: _formatTime(m.createdAt),
+                            status: m.status,
+                            countdown: showTimer ? '$remaining' : null,
+                          );
+                        },
+                      ),
+              ),
+              Container(
+                padding: const EdgeInsets.fromLTRB(12, 8, 12, 16),
+                decoration: BoxDecoration(
+                  color: AppColors.cardDark,
+                  border: Border(
+                    top: BorderSide(
+                      color: AppColors.glassBorder.withOpacity(0.2),
+                      width: 1,
+                    ),
+                  ),
+                ),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Container(
+                        decoration: BoxDecoration(
+                          color: AppColors.amoledBlack,
+                          borderRadius: BorderRadius.circular(20),
+                          border: Border.all(
+                            color: AppColors.glassBorder.withOpacity(0.3),
+                            width: 1,
+                          ),
+                        ),
+                        child: Row(
+                          children: [
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: TextField(
+                                controller: _messageController,
+                                style: const TextStyle(
+                                  color: AppColors.textPrimary,
+                                  fontWeight: FontWeight.w500,
+                                ),
+                                decoration: InputDecoration(
+                                  hintText: 'Type a message...',
+                                  hintStyle: TextStyle(
+                                    color: AppColors.textHint,
+                                  ),
+                                  border: InputBorder.none,
+                                  contentPadding: const EdgeInsets.symmetric(
+                                    vertical: 12,
+                                  ),
+                                ),
+                                onSubmitted: (_) => _send(),
+                              ),
+                            ),
+                            IconButton(
+                              icon: const Icon(
+                                Icons.send_rounded,
+                                color: AppColors.primaryPurple,
+                              ),
+                              onPressed: _send,
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ],
       ),
     );
   }
+}
+
+class _PatternPainter extends CustomPainter {
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = AppColors.primaryPurple.withOpacity(0.03)
+      ..style = PaintingStyle.stroke;
+
+    const spacing = 30.0;
+    for (var y = 0.0; y < size.height; y += spacing) {
+      for (var x = 0.0; x < size.width; x += spacing) {
+        canvas.drawCircle(Offset(x, y), 2, paint);
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }

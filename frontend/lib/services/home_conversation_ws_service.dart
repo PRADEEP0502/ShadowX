@@ -17,6 +17,8 @@ class HomeConversationWebSocket {
   Future<void> connect() => _ws.connect();
   void disconnect() => _ws.disconnect();
 
+  Stream<WSChatEvent> get events => _ws.events;
+
   Stream<Conversation> onConversationUpdateFor(String otherUsername) {
     return _ws.events
         .where(

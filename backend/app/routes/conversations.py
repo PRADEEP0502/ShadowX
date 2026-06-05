@@ -7,12 +7,15 @@ router = APIRouter()
 
 
 def _format_timestamp(ts):
-    # Mongo may store datetimes; we always return ISO string.
+    # Mongo may store datetimes; we always return ISO string with 'Z' suffix.
     if ts is None:
-        return datetime.utcnow().isoformat()
+        return datetime.utcnow().isoformat() + "Z"
     if isinstance(ts, datetime):
-        return ts.isoformat()
-    return str(ts)
+        return ts.isoformat() + "Z"
+    s = str(ts)
+    if s and not s.endswith("Z"):
+        return s + "Z"
+    return s
 
 
 @router.get("/conversations/{username}")
@@ -35,10 +38,10 @@ def get_conversations(username: str):
         return []
 
     # Fetch messages relevant to the user.
-    cursor = messages_collection().find(
+    docs = list(messages_collection().find(
         {"$or": [{"sender": username}, {"receiver": username}]},
         {"sender": 1, "receiver": 1, "message": 1, "created_at": 1, "status": 1},
-    )
+    ))
 
     # Unread count per other participant (WhatsApp-style badge)
     # Meaning: messages where `other` is the sender and `username` is the receiver,
@@ -48,7 +51,7 @@ def get_conversations(username: str):
     # Build latest per other user.
 
     latest = {}
-    for doc in cursor:
+    for doc in docs:
         sender = (doc.get("sender") or "").strip()
         receiver = (doc.get("receiver") or "").strip()
         message = doc.get("message")
@@ -96,7 +99,7 @@ def get_conversations(username: str):
                 }
 
     # Compute unread counts now that we know latest participants.
-    for doc in cursor:
+    for doc in docs:
         sender = (doc.get("sender") or "").strip()
         receiver = (doc.get("receiver") or "").strip()
 

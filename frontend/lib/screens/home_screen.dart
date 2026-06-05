@@ -3,10 +3,18 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../models/conversation.dart';
-import '../services/auth_storage.dart';
+import '../services/active_chat_tracker.dart';
 import '../services/api_service.dart';
+import '../services/auth_storage.dart';
 import '../services/conversation_service.dart';
 import '../services/home_conversation_ws_service.dart';
+import '../services/local_notifications.dart';
+import '../services/websocket_service.dart';
+import '../theme/app_colors.dart';
+import '../widgets/floating_search_bar.dart';
+import '../widgets/premium_conversation_tile.dart';
+import 'profile_screen.dart';
+import 'package:google_fonts/google_fonts.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -32,8 +40,11 @@ class _HomeScreenState extends State<HomeScreen> {
 
   final Map<String, Conversation> _conversationByUser = {};
 
-  StreamSubscription<Conversation>? _wsSub;
+  StreamSubscription<WSChatEvent>? _wsSub;
   HomeConversationWebSocket? _homeWs;
+
+  String _myUsername = '';
+  int _currentTabIndex = 0;
 
   @override
   void dispose() {
@@ -72,28 +83,72 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  Future<void> _connectWebSocket(String myUsername) async {
+    await _wsSub?.cancel();
+    _homeWs?.disconnect();
+
+    _homeWs = HomeConversationWebSocket(myUsername: myUsername);
+    await _homeWs!.connect();
+
+    _wsSub = _homeWs!.events.listen((event) {
+      if (!mounted) return;
+
+      final other = event.sender == myUsername ? event.receiver : event.sender;
+      final isReceived = event.sender != myUsername;
+
+      setState(() {
+        final existing = _conversationByUser[other];
+        final currentUnread = existing?.unreadCount ?? 0;
+
+        final isCurrentlyChatting = ActiveChatTracker.activeUser == other;
+        final increment = (isReceived && !isCurrentlyChatting) ? 1 : 0;
+
+        _conversationByUser[other] = Conversation(
+          username: other,
+          lastMessage: event.message,
+          timestamp: event.createdAt,
+          unreadCount: currentUnread + increment,
+        );
+      });
+
+      if (isReceived && ActiveChatTracker.activeUser != event.sender) {
+        try {
+          print('[DEBUG] Notification triggered: ${event.sender} -> ${event.message}');
+          LocalNotificationService.showMessageNotification(
+            id: DateTime.now().millisecondsSinceEpoch.remainder(1000000),
+            title: event.sender,
+            body: event.message,
+          );
+        } catch (_) {}
+      }
+    });
+  }
+
+  void _handleUsernameChanged(String newUsername) async {
+    setState(() {
+      _myUsername = newUsername;
+    });
+    await _connectWebSocket(newUsername);
+    await _loadConversations();
+  }
+
   @override
   void initState() {
     super.initState();
 
-    // Load conversations and start websocket updates.
     WidgetsBinding.instance.addPostFrameCallback((_) async {
+      try {
+        await LocalNotificationService.init();
+      } catch (_) {}
+
       final myUsername = await _getUsername();
       if (myUsername.isEmpty) return;
 
-      _homeWs = HomeConversationWebSocket(myUsername: myUsername);
-      await _homeWs!.connect();
-
-      _wsSub = _homeWs!.allConversationUpdates.listen((conv) {
-        // Update both sender+receiver side: UI uses the same `other` mapping.
-        // Replace entry + bubble it to top by sorting.
-        if (!mounted) return;
-
-        setState(() {
-          _conversationByUser[conv.username] = conv;
-        });
+      setState(() {
+        _myUsername = myUsername;
       });
 
+      await _connectWebSocket(myUsername);
       await _loadConversations();
     });
   }
@@ -103,254 +158,406 @@ class _HomeScreenState extends State<HomeScreen> {
     final conversations = _conversationByUser.values.toList()
       ..sort((a, b) => b.timestamp.compareTo(a.timestamp));
 
-    final query = _searchController.text.trim().toLowerCase();
-    final filtered = query.isEmpty
-        ? conversations
-        : conversations
-              .where((c) => c.username.toLowerCase().contains(query))
-              .toList();
+    final isChatsTab = _currentTabIndex == 0;
 
     return Scaffold(
+      backgroundColor: AppColors.amoledBlack,
+      extendBody: true,
       appBar: AppBar(
-        title: const Text('ShadowChat X'),
-        actions: [
-          IconButton(
-            onPressed: () {
-              Navigator.of(context).pushReplacementNamed('/login');
-            },
-            icon: const Icon(Icons.logout),
+        backgroundColor: Colors.transparent,
+        elevation: 0,
+        scrolledUnderElevation: 0,
+        title: ShaderMask(
+          blendMode: BlendMode.srcIn,
+          shaderCallback: (bounds) => AppColors.primaryGradient.createShader(
+            Rect.fromLTWH(0, 0, bounds.width, bounds.height),
+          ),
+          child: Text(
+            isChatsTab ? 'ShadowChat X' : 'My Profile',
+            style: GoogleFonts.montserrat(fontWeight: FontWeight.w900, letterSpacing: 0.5),
+          ),
+        ),
+      ),
+      body: Stack(
+        children: [
+          Positioned.fill(
+            child: CustomPaint(
+              painter: _GlowPainter(),
+            ),
+          ),
+          IndexedStack(
+            index: _currentTabIndex,
+            children: [
+              // Tab 0: Chats
+              SafeArea(
+                bottom: false,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  child: Column(
+                    children: [
+                      // Welcome/Greeting header
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 16, top: 4),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  'Welcome back,',
+                                  style: TextStyle(
+                                    color: AppColors.textTertiary,
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w500,
+                                  ),
+                                ),
+                                const SizedBox(height: 2),
+                                Text(
+                                  _myUsername.isNotEmpty ? _myUsername : 'User',
+                                  style: GoogleFonts.montserrat(
+                                    color: AppColors.textPrimary,
+                                    fontSize: 18,
+                                    fontWeight: FontWeight.w800,
+                                  ),
+                                ),
+                              ],
+                            ),
+                            GestureDetector(
+                              onTap: () => setState(() => _currentTabIndex = 1),
+                              child: Container(
+                                decoration: BoxDecoration(
+                                  shape: BoxShape.circle,
+                                  border: Border.all(
+                                    color: AppColors.primaryPurple.withValues(alpha: 0.4),
+                                    width: 1.5,
+                                  ),
+                                  boxShadow: [
+                                    BoxShadow(
+                                      color: const Color(0xFF7B2FF7).withValues(alpha: 0.2),
+                                      blurRadius: 10,
+                                      spreadRadius: 1,
+                                    ),
+                                  ],
+                                ),
+                                child: CircleAvatar(
+                                  radius: 18,
+                                  backgroundColor: AppColors.cardDark,
+                                  child: Text(
+                                    _myUsername.isNotEmpty ? _myUsername.substring(0, 1).toUpperCase() : 'U',
+                                    style: GoogleFonts.montserrat(
+                                      color: Colors.white,
+                                      fontWeight: FontWeight.w700,
+                                      fontSize: 14,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      FloatingSearchBar(
+                        controller: _searchController,
+                        hintText: 'Search users or chats...',
+                        onChanged: _onSearchChanged,
+                        onClear: () {
+                          setState(() {
+                            _foundUsers = const [];
+                            _searchError = null;
+                          });
+                        },
+                      ),
+                      const SizedBox(height: 16),
+                      Row(
+                        children: [
+                          _buildCategoryChip('All Messages', true),
+                          const SizedBox(width: 8),
+                          _buildCategoryChip('Active Now', false),
+                        ],
+                      ),
+                      const SizedBox(height: 14),
+                      Expanded(
+                        child: _buildContent(conversations),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              // Tab 1: Profile
+              ProfileScreen(
+                currentUsername: _myUsername,
+                onUsernameChanged: _handleUsernameChanged,
+              ),
+            ],
           ),
         ],
       ),
-      body: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Column(
+      bottomNavigationBar: SafeArea(
+        child: Container(
+          margin: const EdgeInsets.fromLTRB(24, 0, 24, 16),
+          padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
+          decoration: BoxDecoration(
+            color: AppColors.cardDark.withValues(alpha: 0.85),
+            borderRadius: BorderRadius.circular(24),
+            border: Border.all(
+              color: AppColors.glassBorder.withValues(alpha: 0.15),
+              width: 1.5,
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: const Color(0xFF7B2FF7).withValues(alpha: 0.12),
+                blurRadius: 24,
+                spreadRadius: 2,
+              ),
+            ],
+          ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceAround,
             children: [
-              TextField(
-                controller: _searchController,
-                style: const TextStyle(color: Colors.white),
-                decoration: const InputDecoration(
-                  prefixIcon: Icon(Icons.search),
-                  labelText: 'Search chats',
-                ),
-                textInputAction: TextInputAction.search,
-                onChanged: (value) {
-                  _searchDebounce?.cancel();
-                  final q = value.trim();
-                  if (q.isEmpty) {
-                    if (!mounted) return;
-                    setState(() {
-                      _foundUsers = const [];
-                      _searchError = null;
-                    });
-                    return;
-                  }
-
-                  _searchDebounce = Timer(
-                    const Duration(milliseconds: 350),
-                    () async {
-                      if (!mounted) return;
-                      setState(() {
-                        _searchLoading = true;
-                        _searchError = null;
-                      });
-
-                      try {
-                        final list = await ApiService.searchUsers(username: q);
-                        if (!mounted) return;
-                        setState(() {
-                          _foundUsers = list.cast<Map<String, dynamic>>();
-                          _searchLoading = false;
-                        });
-                      } catch (e) {
-                        if (!mounted) return;
-                        setState(() {
-                          _searchError = e.toString();
-                          _searchLoading = false;
-                        });
-                      }
-                    },
-                  );
-                },
-              ),
-              const SizedBox(height: 16),
-              Expanded(
-                child: _searchLoading
-                    ? const Center(child: CircularProgressIndicator())
-                    : (_searchError != null &&
-                          _searchController.text.trim().isNotEmpty)
-                    ? Center(
-                        child: Text(
-                          _searchError!,
-                          style: const TextStyle(color: Colors.redAccent),
-                        ),
-                      )
-                    : (_searchController.text.trim().isNotEmpty)
-                    ? _foundUsers.isEmpty
-                          ? const Center(child: Text('No users found'))
-                          : ListView.separated(
-                              itemCount: _foundUsers.length,
-                              separatorBuilder: (_, __) =>
-                                  const SizedBox(height: 10),
-                              itemBuilder: (context, index) {
-                                final u = _foundUsers[index];
-                                final otherUsername =
-                                    u['username']?.toString() ?? '';
-
-                                if (otherUsername.isEmpty) {
-                                  return const SizedBox.shrink();
-                                }
-
-                                // Only show users (real users from MongoDB), not dummy entries.
-                                return Card(
-                                  color: const Color(0xFF121212),
-                                  shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(14),
-                                  ),
-                                  child: ListTile(
-                                    title: Text(
-                                      otherUsername,
-                                      style: const TextStyle(
-                                        color: Colors.white,
-                                      ),
-                                    ),
-                                    subtitle: Text(
-                                      _conversationByUser.containsKey(
-                                            otherUsername,
-                                          )
-                                          ? _conversationByUser[otherUsername]!
-                                                .lastMessage
-                                          : 'Tap to chat',
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: const TextStyle(
-                                        color: Colors.white70,
-                                      ),
-                                    ),
-                                    trailing:
-                                        _conversationByUser.containsKey(
-                                              otherUsername,
-                                            ) &&
-                                            _conversationByUser[otherUsername]!
-                                                    .unreadCount >
-                                                0
-                                        ? Container(
-                                            padding: const EdgeInsets.symmetric(
-                                              horizontal: 8,
-                                              vertical: 2,
-                                            ),
-                                            decoration: BoxDecoration(
-                                              color: Colors.redAccent,
-                                              borderRadius:
-                                                  BorderRadius.circular(999),
-                                            ),
-                                            child: Text(
-                                              '${_conversationByUser[otherUsername]!.unreadCount}',
-                                              style: const TextStyle(
-                                                color: Colors.black,
-                                                fontWeight: FontWeight.w700,
-                                                fontSize: 12,
-                                              ),
-                                            ),
-                                          )
-                                        : null,
-                                    onTap: () {
-                                      Navigator.of(context).pushNamed(
-                                        '/chat',
-                                        arguments: {'userName': otherUsername},
-                                      );
-                                    },
-                                  ),
-                                );
-                              },
-                            )
-                    : _loading
-                    ? const Center(child: CircularProgressIndicator())
-                    : _error != null
-                    ? Center(
-                        child: Text(
-                          _error!,
-                          style: const TextStyle(color: Colors.redAccent),
-                        ),
-                      )
-                    : filtered.isEmpty
-                    ? const Center(child: Text('No conversations yet'))
-                    : ListView.separated(
-                        itemCount: filtered.length,
-                        separatorBuilder: (_, __) => const SizedBox(height: 10),
-                        itemBuilder: (context, index) {
-                          final conv = filtered[index];
-                          final time = conv.timestamp.toLocal();
-                          final timeStr =
-                              '${time.hour.toString().padLeft(2, '0')}:${time.minute.toString().padLeft(2, '0')}';
-
-                          return Card(
-                            color: const Color(0xFF121212),
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(14),
-                            ),
-                            child: ListTile(
-                              title: Text(
-                                conv.username,
-                                style: const TextStyle(color: Colors.white),
-                              ),
-                              subtitle: Text(
-                                conv.lastMessage,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(color: Colors.white70),
-                              ),
-                              trailing: Column(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Text(
-                                    timeStr,
-                                    style: const TextStyle(
-                                      color: Colors.white70,
-                                      fontSize: 12,
-                                    ),
-                                  ),
-                                  if (conv.unreadCount > 0)
-                                    Container(
-                                      margin: const EdgeInsets.only(top: 6),
-                                      padding: const EdgeInsets.symmetric(
-                                        horizontal: 8,
-                                        vertical: 2,
-                                      ),
-                                      decoration: BoxDecoration(
-                                        color: Colors.redAccent,
-                                        borderRadius: BorderRadius.circular(
-                                          999,
-                                        ),
-                                      ),
-                                      child: Text(
-                                        '${conv.unreadCount}',
-                                        style: const TextStyle(
-                                          color: Colors.black,
-                                          fontWeight: FontWeight.w700,
-                                          fontSize: 12,
-                                        ),
-                                      ),
-                                    ),
-                                ],
-                              ),
-                              onTap: () {
-                                Navigator.of(context).pushNamed(
-                                  '/chat',
-                                  arguments: {'userName': conv.username},
-                                );
-                              },
-                            ),
-                          );
-                        },
-                      ),
-              ),
+              _buildNavItem(0, Icons.chat_bubble_outline_rounded, Icons.chat_bubble_rounded, 'Chats'),
+              _buildNavItem(1, Icons.person_outline_rounded, Icons.person_rounded, 'Profile'),
             ],
           ),
         ),
       ),
     );
   }
+
+  Widget _buildNavItem(int index, IconData unselectedIcon, IconData selectedIcon, String label) {
+    final isSelected = _currentTabIndex == index;
+    return GestureDetector(
+      onTap: () => setState(() => _currentTabIndex = index),
+      behavior: HitTestBehavior.opaque,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 250),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+        decoration: BoxDecoration(
+          color: isSelected ? const Color(0xFF7B2FF7).withValues(alpha: 0.15) : Colors.transparent,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(
+            color: isSelected ? const Color(0xFF7B2FF7).withValues(alpha: 0.4) : Colors.transparent,
+            width: 1.2,
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              isSelected ? selectedIcon : unselectedIcon,
+              color: isSelected ? Colors.white : AppColors.textTertiary,
+              size: 20,
+            ),
+            if (isSelected) ...[
+              const SizedBox(width: 8),
+              Text(
+                label,
+                style: GoogleFonts.montserrat(
+                  color: Colors.white,
+                  fontWeight: FontWeight.w700,
+                  fontSize: 12,
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildCategoryChip(String label, bool isSelected) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+      decoration: BoxDecoration(
+        color: isSelected ? const Color(0xFF7B2FF7).withValues(alpha: 0.15) : AppColors.cardDark.withValues(alpha: 0.5),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(
+          color: isSelected ? const Color(0xFF7B2FF7).withValues(alpha: 0.4) : AppColors.glassBorder.withValues(alpha: 0.15),
+          width: 1,
+        ),
+      ),
+      child: Text(
+        label,
+        style: TextStyle(
+          color: isSelected ? Colors.white : AppColors.textSecondary,
+          fontSize: 12,
+          fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
+        ),
+      ),
+    );
+  }
+
+  void _onSearchChanged(String value) {
+    _searchDebounce?.cancel();
+    final q = value.trim();
+    if (q.isEmpty) {
+      if (!mounted) return;
+      setState(() {
+        _foundUsers = const [];
+        _searchError = null;
+      });
+      return;
+    }
+
+    _searchDebounce = Timer(
+      const Duration(milliseconds: 350),
+      () async {
+        if (!mounted) return;
+        setState(() {
+          _searchLoading = true;
+          _searchError = null;
+        });
+
+        try {
+          final list = await ApiService.searchUsers(username: q);
+          if (!mounted) return;
+          setState(() {
+            _foundUsers = list.cast<Map<String, dynamic>>();
+            _searchLoading = false;
+          });
+        } catch (e) {
+          if (!mounted) return;
+          setState(() {
+            _searchError = e.toString();
+            _searchLoading = false;
+          });
+        }
+      },
+    );
+  }
+
+  Widget _buildContent(List<Conversation> conversations) {
+    final query = _searchController.text.trim().toLowerCase();
+    final filtered = query.isEmpty
+        ? conversations
+        : conversations
+            .where((c) => c.username.toLowerCase().contains(query))
+            .toList();
+
+    if (_searchLoading) {
+      return const Center(
+        child: CircularProgressIndicator(
+          color: AppColors.primaryPurple,
+        ),
+      );
+    }
+
+    if (_searchError != null && _searchController.text.trim().isNotEmpty) {
+      return Center(
+        child: Text(
+          _searchError!,
+          style: TextStyle(color: AppColors.errorRed),
+        ),
+      );
+    }
+
+    if (_searchController.text.trim().isNotEmpty) {
+      if (_foundUsers.isEmpty) {
+        return Center(
+          child: Text(
+            'No users found',
+            style: TextStyle(color: AppColors.textSecondary),
+          ),
+        );
+      }
+
+      return ListView.separated(
+        itemCount: _foundUsers.length,
+        padding: const EdgeInsets.only(bottom: 110),
+        separatorBuilder: (_, __) => const SizedBox(height: 8),
+        itemBuilder: (context, index) {
+          final u = _foundUsers[index];
+          final otherUsername = u['username']?.toString() ?? '';
+
+          if (otherUsername.isEmpty) {
+            return const SizedBox.shrink();
+          }
+
+          final hasConversation = _conversationByUser.containsKey(otherUsername);
+          final conv = hasConversation ? _conversationByUser[otherUsername]! : null;
+
+          return PremiumConversationTile(
+            username: otherUsername,
+            lastMessage:
+                conv?.lastMessage ?? 'Tap to start a conversation',
+            unreadCount: conv?.unreadCount ?? 0,
+            timestamp: conv?.timestamp,
+            onTap: () async {
+              await Navigator.of(context).pushNamed(
+                '/chat',
+                arguments: {'userName': otherUsername},
+              );
+              _loadConversations();
+            },
+          );
+        },
+      );
+    }
+
+    if (_loading) {
+      return const Center(
+        child: CircularProgressIndicator(
+          color: AppColors.primaryPurple,
+        ),
+      );
+    }
+
+    if (_error != null) {
+      return Center(
+        child: Text(
+          _error!,
+          style: TextStyle(color: AppColors.errorRed),
+        ),
+      );
+    }
+
+    if (filtered.isEmpty) {
+      return Center(
+        child: Text(
+          'No conversations yet',
+          style: TextStyle(color: AppColors.textSecondary),
+        ),
+      );
+    }
+
+    return ListView.separated(
+      itemCount: filtered.length,
+      padding: const EdgeInsets.only(bottom: 110),
+      separatorBuilder: (_, __) => const SizedBox(height: 8),
+      itemBuilder: (context, index) {
+        final conv = filtered[index];
+        return PremiumConversationTile(
+          username: conv.username,
+          lastMessage: conv.lastMessage,
+          unreadCount: conv.unreadCount,
+          timestamp: conv.timestamp,
+          onTap: () async {
+            await Navigator.of(context).pushNamed(
+              '/chat',
+              arguments: {'userName': conv.username},
+            );
+            _loadConversations();
+          },
+        );
+      },
+    );
+  }
+}
+
+class _GlowPainter extends CustomPainter {
+  @override
+  void paint(Canvas canvas, Size size) {
+    final p1 = Paint()
+      ..color = const Color(0xFF7B2FF7).withValues(alpha: 0.12)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 100);
+    final p2 = Paint()
+      ..color = const Color(0xFF3A8DFF).withValues(alpha: 0.10)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 80);
+
+    canvas.drawCircle(Offset(size.width * 0.15, size.height * 0.2), 160, p1);
+    canvas.drawCircle(Offset(size.width * 0.85, size.height * 0.75), 180, p2);
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }
