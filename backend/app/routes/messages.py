@@ -72,6 +72,7 @@ def get_messages(user1: str, user2: str):
                     {"sender": user1, "receiver": user2},
                     {"sender": user2, "receiver": user1},
                 ],
+                "deleted_for": {"$ne": user1},
                 "$and": [
                     # Keep everything except vanish messages that are already past window.
                     {
@@ -104,6 +105,9 @@ def get_messages(user1: str, user2: str):
         seen_at = m.get("seen_at")
         if isinstance(seen_at, datetime):
             m["seen_at"] = seen_at.isoformat() + "Z"
+            
+        m["is_deleted_everyone"] = m.get("is_deleted_everyone", False)
+        m["deleted_for"] = m.get("deleted_for", [])
 
     return messages
 
@@ -176,5 +180,100 @@ def cleanup_vanish_messages():
     )
 
     return {"ok": True, "deleted": res.deleted_count}
+
+
+
+
+class DeleteForMeRequest(BaseModel):
+    username: str
+
+
+class DeleteEveryoneRequest(BaseModel):
+    username: str
+
+
+@router.post("/messages/{message_id}/delete-for-me")
+def delete_for_me(message_id: str, req: DeleteForMeRequest):
+    from bson import ObjectId
+    from bson.errors import InvalidId
+
+    try:
+        oid = ObjectId(message_id)
+    except InvalidId:
+        raise HTTPException(status_code=400, detail="Invalid message ID")
+
+    res = messages_collection().update_one(
+        {"_id": oid},
+        {"$addToSet": {"deleted_for": req.username}}
+    )
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Message not found")
+
+    return {"ok": True}
+
+
+@router.post("/messages/{message_id}/delete-everyone")
+async def delete_everyone(message_id: str, req: DeleteEveryoneRequest):
+    from bson import ObjectId
+    from bson.errors import InvalidId
+    from app.websocket.chat import send_message as ws_send_message
+
+    try:
+        oid = ObjectId(message_id)
+    except InvalidId:
+        raise HTTPException(status_code=400, detail="Invalid message ID")
+
+    msg = messages_collection().find_one({"_id": oid})
+    if not msg:
+        raise HTTPException(status_code=404, detail="Message not found")
+
+    if msg.get("sender") != req.username:
+        raise HTTPException(status_code=403, detail="You can only delete your own messages for everyone")
+
+    messages_collection().update_one(
+        {"_id": oid},
+        {"$set": {
+            "message": "This message was deleted",
+            "is_deleted_everyone": True
+        }}
+    )
+
+    created_at = msg.get("created_at")
+    seen_at = msg.get("seen_at")
+
+    # Broadcast updated message to both sender and receiver
+    payload = {
+        "type": "delete_everyone",
+        "_id": message_id,
+        "sender": msg["sender"],
+        "receiver": msg["receiver"],
+        "message": "This message was deleted",
+        "is_deleted_everyone": True,
+        "created_at": (created_at.isoformat() + "Z") if hasattr(created_at, "isoformat") else "",
+        "status": msg.get("status", "sent"),
+        "seen_at": (seen_at.isoformat() + "Z") if hasattr(seen_at, "isoformat") else None,
+        "deleted_for": msg.get("deleted_for", []),
+    }
+
+    try:
+        await ws_send_message(msg["sender"], payload)
+        await ws_send_message(msg["receiver"], payload)
+    except Exception as e:
+        print(f"[DEBUG] WS broadcast delete-everyone failed: {e}")
+
+    return payload
+
+
+@router.delete("/messages/conversation/{user1}/{user2}")
+def delete_conversation(user1: str, user2: str):
+    """Delete all messages between user1 and user2 from database."""
+    res = messages_collection().delete_many({
+        "$or": [
+            {"sender": user1, "receiver": user2},
+            {"sender": user2, "receiver": user1}
+        ]
+    })
+    print(f"[DEBUG] Deleted {res.deleted_count} messages in conversation between {user1} and {user2}")
+    return {"ok": True, "deleted_count": res.deleted_count}
 
 

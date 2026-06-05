@@ -7,6 +7,7 @@ class PremiumChatBubble extends StatelessWidget {
   final String time;
   final String? status;
   final String? countdown;
+  final bool isDeletedEveryone;
 
   const PremiumChatBubble({
     super.key,
@@ -15,13 +16,16 @@ class PremiumChatBubble extends StatelessWidget {
     required this.time,
     this.status,
     this.countdown,
+    this.isDeletedEveryone = false,
   });
 
   @override
   Widget build(BuildContext context) {
     final textColor = Colors.white;
     final statusColor = isMe ? Colors.white70 : AppColors.primaryPurple;
-    final bubbleColor = isMe ? null : const Color(0xFF252529);
+    final bubbleColor = isDeletedEveryone
+        ? const Color(0xFF1E1E22)
+        : (isMe ? null : const Color(0xFF252529));
 
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
@@ -33,7 +37,7 @@ class PremiumChatBubble extends StatelessWidget {
           ),
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
           decoration: BoxDecoration(
-            gradient: isMe
+            gradient: (isMe && !isDeletedEveryone)
                 ? const LinearGradient(
                     colors: [Color(0xFF7B2FF7), Color(0xFF3A8DFF)],
                     begin: Alignment.topLeft,
@@ -52,7 +56,7 @@ class PremiumChatBubble extends StatelessWidget {
               width: 1,
             ),
             boxShadow: [
-              if (isMe)
+              if (isMe && !isDeletedEveryone)
                 BoxShadow(
                   color: AppColors.primaryPurple.withValues(alpha: 0.2),
                   blurRadius: 12,
@@ -65,15 +69,37 @@ class PremiumChatBubble extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisSize: MainAxisSize.min,
               children: [
-                Text(
-                  message,
-                  style: TextStyle(
-                    color: textColor,
-                    fontSize: 15,
-                    fontWeight: FontWeight.w500,
-                    height: 1.35,
+                if (isDeletedEveryone)
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        Icons.block_rounded,
+                        color: Colors.white38,
+                        size: 15,
+                      ),
+                      const SizedBox(width: 6),
+                      Text(
+                        'This message was deleted',
+                        style: TextStyle(
+                          color: Colors.white38,
+                          fontSize: 14,
+                          fontStyle: FontStyle.italic,
+                          fontWeight: FontWeight.w400,
+                        ),
+                      ),
+                    ],
+                  )
+                else
+                  Text(
+                    message,
+                    style: TextStyle(
+                      color: textColor,
+                      fontSize: 15,
+                      fontWeight: FontWeight.w500,
+                      height: 1.35,
+                    ),
                   ),
-                ),
                 const SizedBox(height: 6),
                 Align(
                   alignment: Alignment.bottomRight,
@@ -110,14 +136,14 @@ class PremiumChatBubble extends StatelessWidget {
                       Text(
                         time,
                         style: TextStyle(
-                          color: isMe
+                          color: isMe && !isDeletedEveryone
                               ? Colors.white70
                               : AppColors.textTertiary,
                           fontSize: 11,
                           fontWeight: FontWeight.w500,
                         ),
                       ),
-                      if (status != null) ...[
+                      if (status != null && !isDeletedEveryone) ...[
                         const SizedBox(width: 4),
                         Icon(
                           status == 'seen'

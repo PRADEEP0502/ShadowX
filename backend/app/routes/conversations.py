@@ -39,7 +39,10 @@ def get_conversations(username: str):
 
     # Fetch messages relevant to the user.
     docs = list(messages_collection().find(
-        {"$or": [{"sender": username}, {"receiver": username}]},
+        {
+            "$or": [{"sender": username}, {"receiver": username}],
+            "deleted_for": {"$ne": username}
+        },
         {"sender": 1, "receiver": 1, "message": 1, "created_at": 1, "status": 1},
     ))
 

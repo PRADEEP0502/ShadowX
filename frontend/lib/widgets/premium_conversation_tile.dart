@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
-import '../models/conversation.dart';
 import '../theme/app_colors.dart';
 import '../widgets/premium_avatar.dart';
 import '../widgets/unread_badge.dart';
@@ -12,6 +11,9 @@ class PremiumConversationTile extends StatelessWidget {
   final int unreadCount;
   final DateTime? timestamp;
   final VoidCallback onTap;
+  final VoidCallback? onLongPress;
+  final bool isPinned;
+  final bool isMuted;
 
   const PremiumConversationTile({
     super.key,
@@ -20,6 +22,9 @@ class PremiumConversationTile extends StatelessWidget {
     required this.unreadCount,
     required this.onTap,
     this.timestamp,
+    this.onLongPress,
+    this.isPinned = false,
+    this.isMuted = false,
   });
 
   @override
@@ -32,6 +37,7 @@ class PremiumConversationTile extends StatelessWidget {
       color: Colors.transparent,
       child: InkWell(
         onTap: onTap,
+        onLongPress: onLongPress,
         borderRadius: BorderRadius.circular(20),
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
@@ -52,14 +58,46 @@ class PremiumConversationTile extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   mainAxisSize: MainAxisSize.min,
                   children: [
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            username,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              color: AppColors.textPrimary,
+                              fontWeight: FontWeight.w700,
+                              fontSize: 15,
+                            ),
+                          ),
+                        ),
+                        if (isPinned) ...[
+                          const SizedBox(width: 4),
+                          const Icon(
+                            Icons.push_pin_rounded,
+                            color: AppColors.primaryPurple,
+                            size: 14,
+                          ),
+                        ],
+                        if (isMuted) ...[
+                          const SizedBox(width: 4),
+                          const Icon(
+                            Icons.volume_off_rounded,
+                            color: AppColors.textTertiary,
+                            size: 14,
+                          ),
+                        ],
+                      ],
+                    ),
+                    const SizedBox(height: 3),
                     Text(
-                      username,
+                      lastMessage,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
-                        color: AppColors.textPrimary,
-                        fontWeight: FontWeight.w700,
-                        fontSize: 15,
+                        color: AppColors.textSecondary,
+                        fontSize: 12,
                       ),
                     ),
                   ],

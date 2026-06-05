@@ -4,7 +4,7 @@ from datetime import datetime
 
 from app.websocket.chat import connect as ws_connect, disconnect as ws_disconnect, active_connections
 from app.websocket.chat import send_message as ws_send_message
-from app.database import messages_collection
+from app.database import messages_collection, users_collection
 
 router = APIRouter()
 
@@ -12,6 +12,31 @@ router = APIRouter()
 class IncomingWSMessage(BaseModel):
     receiver: str
     message: str
+
+
+async def broadcast_status(username: str, is_online: bool):
+    now = datetime.utcnow()
+    last_seen_str = None
+    if is_online:
+        users_collection().update_one(
+            {"username": username},
+            {"$set": {"is_online": True}}
+        )
+    else:
+        users_collection().update_one(
+            {"username": username},
+            {"$set": {"is_online": False, "last_seen": now}}
+        )
+        last_seen_str = now.isoformat() + "Z"
+
+    payload = {
+        "type": "status",
+        "username": username,
+        "is_online": is_online,
+        "last_seen": last_seen_str
+    }
+    for conn_username in list(active_connections.keys()):
+        await ws_send_message(conn_username, payload)
 
 
 @router.websocket("/ws/{username}")
@@ -50,9 +75,23 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
         print(f"[DEBUG] Failed to mark pending messages as delivered: {e}")
 
     try:
+        await broadcast_status(username, True)
         while True:
             data = await websocket.receive_json()
             print(f"[DEBUG] Message received on WS from {username}: {data}")
+
+            msg_type = data.get("type", "message")
+            if msg_type == "typing":
+                receiver = data.get("receiver")
+                if receiver:
+                    typing_payload = {
+                        "type": "typing",
+                        "sender": username,
+                        "receiver": receiver
+                    }
+                    await ws_send_message(receiver, typing_payload)
+                continue
+
             incoming = IncomingWSMessage(**data)
 
             now = datetime.utcnow()
@@ -88,11 +127,9 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
 
     except WebSocketDisconnect:
         ws_disconnect(username)
+        await broadcast_status(username, False)
         print(f"[DEBUG] WebSocket disconnected for user: {username}")
     except Exception as e:
         ws_disconnect(username)
+        await broadcast_status(username, False)
         print(f"[DEBUG] WebSocket error for user: {username}: {e}")
-        # Let disconnect clean up.
-
-
-

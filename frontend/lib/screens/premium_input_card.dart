@@ -17,12 +17,19 @@ class PremiumInputCard extends StatelessWidget {
       constraints: BoxConstraints(maxWidth: maxWidth),
       padding: const EdgeInsets.all(24),
       decoration: BoxDecoration(
-        color: AppColors.glassBlur,
+        color: AppColors.cardDark.withValues(alpha: 0.8),
         borderRadius: BorderRadius.circular(24),
         border: Border.all(
-          color: AppColors.glassBorder.withOpacity(0.3),
-          width: 1,
+          color: AppColors.glassBorder.withValues(alpha: 0.25),
+          width: 1.5,
         ),
+        boxShadow: [
+          BoxShadow(
+            color: const Color(0xFF7B2FF7).withValues(alpha: 0.08),
+            blurRadius: 32,
+            spreadRadius: 2,
+          ),
+        ],
       ),
       child: child,
     );

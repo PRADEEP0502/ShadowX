@@ -41,6 +41,9 @@ def search_users(username: str):
             },
         )
     )
+    for u in users:
+        if "last_seen" in u and u["last_seen"]:
+            u["last_seen"] = u["last_seen"].isoformat() + "Z"
     return users
 
 
@@ -50,6 +53,9 @@ def get_user_profile(username: str):
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     
+    last_seen_val = user.get("last_seen")
+    last_seen_str = last_seen_val.isoformat() + "Z" if last_seen_val else None
+
     return {
         "username": user.get("username"),
         "email": user.get("email"),
@@ -59,6 +65,8 @@ def get_user_profile(username: str):
         "notification_sound": user.get("notification_sound", True),
         "notification_vibrate": user.get("notification_vibrate", True),
         "notification_preview": user.get("notification_preview", True),
+        "is_online": user.get("is_online", False),
+        "last_seen": last_seen_str,
     }
 
 

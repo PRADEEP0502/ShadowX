@@ -17,6 +17,9 @@ class ChatMessage {
   // Mongo id
   final String? id;
 
+  final bool isDeletedEveryone;
+  final List<String> deletedFor;
+
   const ChatMessage({
     required this.sender,
     required this.receiver,
@@ -25,6 +28,8 @@ class ChatMessage {
     required this.status,
     required this.seenAt,
     required this.id,
+    this.isDeletedEveryone = false,
+    this.deletedFor = const [],
   });
 
   static DateTime _parseDateTime(dynamic raw) {
@@ -56,6 +61,12 @@ class ChatMessage {
             return parsed.millisecondsSinceEpoch == 0 ? null : parsed;
           })();
 
+    final isDeletedEveryone = json['is_deleted_everyone'] as bool? ?? false;
+    final deletedForRaw = json['deleted_for'];
+    final deletedFor = deletedForRaw is List
+        ? List<String>.from(deletedForRaw.map((x) => x.toString()))
+        : const <String>[];
+
     return ChatMessage(
       id: (json['_id'] ?? json['id'])?.toString(),
       sender: (json['sender'] ?? '').toString(),
@@ -64,6 +75,8 @@ class ChatMessage {
       createdAt: created,
       status: (statusRaw ?? 'sent').toString(),
       seenAt: seenAt,
+      isDeletedEveryone: isDeletedEveryone,
+      deletedFor: deletedFor,
     );
   }
 }
@@ -125,6 +138,53 @@ class MessageService {
     final response = await http.post(uri);
     if (response.statusCode >= 400) {
       throw Exception('Failed to mark message seen');
+    }
+  }
+
+  static Future<void> deleteForMe({
+    required String messageId,
+    required String username,
+  }) async {
+    final uri = Uri.parse('${ApiConstants.baseUrl}/messages/$messageId/delete-for-me');
+    final response = await http.post(
+      uri,
+      headers: const {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+      },
+      body: jsonEncode({'username': username}),
+    );
+    if (response.statusCode >= 400) {
+      throw Exception('Failed to delete message for me');
+    }
+  }
+
+  static Future<void> deleteForEveryone({
+    required String messageId,
+    required String username,
+  }) async {
+    final uri = Uri.parse('${ApiConstants.baseUrl}/messages/$messageId/delete-everyone');
+    final response = await http.post(
+      uri,
+      headers: const {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+      },
+      body: jsonEncode({'username': username}),
+    );
+    if (response.statusCode >= 400) {
+      throw Exception('Failed to delete message for everyone');
+    }
+  }
+
+  static Future<void> deleteConversation({
+    required String user1,
+    required String user2,
+  }) async {
+    final uri = Uri.parse('${ApiConstants.baseUrl}/messages/conversation/$user1/$user2');
+    final response = await http.delete(uri);
+    if (response.statusCode >= 400) {
+      throw Exception('Failed to delete conversation');
     }
   }
 }

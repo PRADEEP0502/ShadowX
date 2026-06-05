@@ -1,15 +1,17 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_windowmanager/flutter_windowmanager.dart';
+import 'package:google_fonts/google_fonts.dart';
 import 'package:intl/intl.dart';
 
 import '../services/active_chat_tracker.dart';
+import '../services/api_service.dart';
 import '../services/auth_storage.dart';
 import '../services/message_service.dart';
 import '../services/websocket_service.dart';
 import '../theme/app_colors.dart';
-import '../theme/app_text_styles.dart';
 import '../widgets/premium_avatar.dart';
 import '../widgets/premium_chat_bubble.dart';
 
@@ -25,6 +27,8 @@ class _ChatScreenState extends State<ChatScreen> {
   String _myUsername = '';
   WebSocketService? _ws;
   StreamSubscription<WSChatEvent>? _wsSub;
+  StreamSubscription<WSStatusEvent>? _statusSub;
+  StreamSubscription<WSTypingEvent>? _typingSub;
 
   final _messageController = TextEditingController();
 
@@ -33,6 +37,12 @@ class _ChatScreenState extends State<ChatScreen> {
   final List<ChatMessage> _messages = [];
 
   Timer? _ticker;
+  Timer? _typingTimer;
+
+  bool _otherUserOnline = false;
+  DateTime? _otherUserLastSeen;
+  bool _otherUserTyping = false;
+  DateTime? _lastTypingSent;
 
   @override
   void didChangeDependencies() {
@@ -54,16 +64,46 @@ class _ChatScreenState extends State<ChatScreen> {
       _myUsername = (await AuthStorage.getUsername()) ?? '';
       await _initWebSocket();
       await _loadMessages();
+      await _fetchUserPresence();
     });
+    _messageController.addListener(_onTextChanged);
   }
 
   @override
   void dispose() {
     ActiveChatTracker.activeUser = null;
     _ticker?.cancel();
+    _typingTimer?.cancel();
     _wsSub?.cancel();
+    _statusSub?.cancel();
+    _typingSub?.cancel();
+    _messageController.removeListener(_onTextChanged);
     _messageController.dispose();
     super.dispose();
+  }
+
+  void _onTextChanged() {
+    final text = _messageController.text;
+    if (text.isEmpty) return;
+    final now = DateTime.now();
+    if (_lastTypingSent == null || now.difference(_lastTypingSent!).inSeconds >= 2) {
+      _lastTypingSent = now;
+      _ws?.sendTyping(receiver: _userName);
+    }
+  }
+
+  Future<void> _fetchUserPresence() async {
+    try {
+      final profile = await ApiService.fetchUserProfile(_userName);
+      if (!mounted) return;
+      setState(() {
+        _otherUserOnline = profile['is_online'] as bool? ?? false;
+        final lastSeenRaw = profile['last_seen'];
+        if (lastSeenRaw != null) {
+          _otherUserLastSeen = DateTime.tryParse(lastSeenRaw.toString());
+        }
+      });
+    } catch (_) {}
   }
 
   int _remainingSeconds(ChatMessage m) {
@@ -142,6 +182,8 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Future<void> _initWebSocket() async {
     await _wsSub?.cancel();
+    _statusSub?.cancel();
+    _typingSub?.cancel();
 
     if (_myUsername.isEmpty) return;
 
@@ -175,6 +217,8 @@ class _ChatScreenState extends State<ChatScreen> {
           createdAt: event.createdAt,
           status: event.status,
           seenAt: event.seenAt,
+          isDeletedEveryone: event.isDeletedEveryone,
+          deletedFor: event.deletedFor,
         );
 
         if (idx >= 0) {
@@ -183,6 +227,35 @@ class _ChatScreenState extends State<ChatScreen> {
           _messages.add(newMessage);
         }
       });
+    });
+
+    _statusSub = WebSocketService.statusStream.listen((event) {
+      if (event.username == _userName) {
+        if (!mounted) return;
+        setState(() {
+          _otherUserOnline = event.isOnline;
+          if (event.lastSeen != null) {
+            _otherUserLastSeen = event.lastSeen;
+          }
+        });
+      }
+    });
+
+    _typingSub = _ws!.typingEvents.listen((event) {
+      if (event.sender == _userName && event.receiver == _myUsername) {
+        if (!mounted) return;
+        setState(() {
+          _otherUserTyping = true;
+        });
+        _typingTimer?.cancel();
+        _typingTimer = Timer(const Duration(seconds: 3), () {
+          if (mounted) {
+            setState(() {
+              _otherUserTyping = false;
+            });
+          }
+        });
+      }
     });
   }
 
@@ -206,6 +279,352 @@ class _ChatScreenState extends State<ChatScreen> {
     return DateFormat('HH:mm').format(dt);
   }
 
+  Widget _buildSubtitleWidget() {
+    if (_otherUserTyping) {
+      return Text(
+        'is typing...',
+        style: GoogleFonts.montserrat(
+          color: AppColors.primaryPurple,
+          fontSize: 11,
+          fontWeight: FontWeight.w600,
+        ),
+      );
+    }
+    if (_otherUserOnline) {
+      return Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 6,
+            height: 6,
+            decoration: const BoxDecoration(
+              shape: BoxShape.circle,
+              color: Color(0xFF10B981),
+            ),
+          ),
+          const SizedBox(width: 4),
+          Text(
+            'Online',
+            style: const TextStyle(
+              color: Color(0xFF10B981),
+              fontSize: 11,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
+      );
+    }
+    if (_otherUserLastSeen != null) {
+      final timeStr = DateFormat('HH:mm').format(_otherUserLastSeen!.toLocal());
+      return Text(
+        'Last seen $timeStr',
+        style: const TextStyle(
+          color: AppColors.textTertiary,
+          fontSize: 11,
+        ),
+      );
+    }
+    return const Text(
+      'Offline',
+      style: TextStyle(
+        color: AppColors.textTertiary,
+        fontSize: 11,
+      ),
+    );
+  }
+
+  void _showMessageActions(BuildContext context, ChatMessage m) {
+    final isMyMessage = m.sender == _myUsername;
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (context) {
+        return Container(
+          decoration: BoxDecoration(
+            color: AppColors.cardDark,
+            borderRadius: const BorderRadius.only(
+              topLeft: Radius.circular(24),
+              topRight: Radius.circular(24),
+            ),
+            border: Border.all(
+              color: AppColors.glassBorder.withOpacity(0.3),
+              width: 1.5,
+            ),
+          ),
+          child: SafeArea(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Center(
+                  child: Container(
+                    margin: const EdgeInsets.symmetric(vertical: 12),
+                    width: 40,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: Colors.white24,
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                ),
+                ListTile(
+                  leading: const Icon(Icons.copy_rounded, color: Colors.white),
+                  title: const Text('Copy', style: TextStyle(color: Colors.white)),
+                  onTap: () {
+                    Navigator.pop(context);
+                    _copyMessageText(m);
+                  },
+                ),
+                ListTile(
+                  leading: const Icon(Icons.delete_outline_rounded, color: Colors.white),
+                  title: const Text('Delete for Me', style: TextStyle(color: Colors.white)),
+                  onTap: () {
+                    Navigator.pop(context);
+                    _deleteMessageForMe(m);
+                  },
+                ),
+                if (isMyMessage)
+                  ListTile(
+                    leading: const Icon(Icons.delete_forever_rounded, color: AppColors.errorRed),
+                    title: const Text('Delete for Everyone', style: TextStyle(color: AppColors.errorRed)),
+                    onTap: () {
+                      Navigator.pop(context);
+                      _deleteMessageForEveryone(m);
+                    },
+                  ),
+                ListTile(
+                  leading: const Icon(Icons.info_outline_rounded, color: Colors.white),
+                  title: const Text('Message Info', style: TextStyle(color: Colors.white)),
+                  onTap: () {
+                    Navigator.pop(context);
+                    _showMessageInfo(m);
+                  },
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  void _copyMessageText(ChatMessage m) {
+    Clipboard.setData(ClipboardData(text: m.message));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Text copied to clipboard'),
+        backgroundColor: AppColors.primaryPurple,
+        behavior: SnackBarBehavior.floating,
+        duration: Duration(seconds: 2),
+      ),
+    );
+  }
+
+  Future<void> _deleteMessageForMe(ChatMessage m) async {
+    if (m.id == null) return;
+    try {
+      await MessageService.deleteForMe(messageId: m.id!, username: _myUsername);
+      if (!mounted) return;
+      setState(() {
+        _messages.removeWhere((msg) => msg.id == m.id);
+      });
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Error: ${e.toString()}'),
+          backgroundColor: AppColors.errorRed,
+        ),
+      );
+    }
+  }
+
+  Future<void> _deleteMessageForEveryone(ChatMessage m) async {
+    if (m.id == null) return;
+    try {
+      await MessageService.deleteForEveryone(messageId: m.id!, username: _myUsername);
+      if (!mounted) return;
+      setState(() {
+        final idx = _messages.indexWhere((msg) => msg.id == m.id);
+        if (idx >= 0) {
+          _messages[idx] = ChatMessage(
+            id: m.id,
+            sender: m.sender,
+            receiver: m.receiver,
+            message: 'This message was deleted',
+            createdAt: m.createdAt,
+            status: m.status,
+            seenAt: m.seenAt,
+            isDeletedEveryone: true,
+            deletedFor: m.deletedFor,
+          );
+        }
+      });
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Error: ${e.toString()}'),
+          backgroundColor: AppColors.errorRed,
+        ),
+      );
+    }
+  }
+
+  void _showMessageInfo(ChatMessage m) {
+    final sentTimeStr = DateFormat('yyyy-MM-dd HH:mm:ss').format(m.createdAt.toLocal());
+    final seenTimeStr = m.seenAt != null
+        ? DateFormat('yyyy-MM-dd HH:mm:ss').format(m.seenAt!.toLocal())
+        : 'N/A';
+
+    String statusText = 'Sent';
+    IconData statusIcon = Icons.done_rounded;
+    Color statusColor = AppColors.textSecondary;
+
+    if (m.status == 'seen') {
+      statusText = 'Read / Seen';
+      statusIcon = Icons.done_all_rounded;
+      statusColor = const Color(0xFF3B82F6);
+    } else if (m.status == 'delivered') {
+      statusText = 'Delivered';
+      statusIcon = Icons.done_all_rounded;
+      statusColor = AppColors.textSecondary;
+    }
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (context) {
+        return Container(
+          padding: const EdgeInsets.all(24),
+          decoration: BoxDecoration(
+            color: AppColors.cardDark,
+            borderRadius: const BorderRadius.only(
+              topLeft: Radius.circular(24),
+              topRight: Radius.circular(24),
+            ),
+            border: Border.all(
+              color: AppColors.glassBorder.withOpacity(0.3),
+              width: 1.5,
+            ),
+          ),
+          child: SafeArea(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Message Info',
+                  style: GoogleFonts.montserrat(
+                    color: Colors.white,
+                    fontWeight: FontWeight.w800,
+                    fontSize: 18,
+                  ),
+                ),
+                const SizedBox(height: 16),
+                Text(
+                  'Message:',
+                  style: TextStyle(
+                    color: AppColors.textTertiary,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  m.isDeletedEveryone ? 'This message was deleted' : m.message,
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 15,
+                    fontStyle: m.isDeletedEveryone ? FontStyle.italic : FontStyle.normal,
+                  ),
+                ),
+                const Divider(color: AppColors.divider, height: 24),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Sent',
+                          style: TextStyle(
+                            color: AppColors.textTertiary,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          sentTimeStr,
+                          style: const TextStyle(color: Colors.white, fontSize: 14),
+                        ),
+                      ],
+                    ),
+                    const Icon(Icons.send_rounded, color: AppColors.primaryPurple, size: 20),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Status',
+                          style: TextStyle(
+                            color: AppColors.textTertiary,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          statusText,
+                          style: TextStyle(color: statusColor, fontSize: 14, fontWeight: FontWeight.bold),
+                        ),
+                      ],
+                    ),
+                    Icon(statusIcon, color: statusColor, size: 20),
+                  ],
+                ),
+                if (m.status == 'seen') ...[
+                  const SizedBox(height: 16),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Read Time',
+                            style: TextStyle(
+                              color: AppColors.textTertiary,
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            seenTimeStr,
+                            style: const TextStyle(color: Colors.white, fontSize: 14),
+                          ),
+                        ],
+                      ),
+                      const Icon(Icons.visibility_rounded, color: Color(0xFF3B82F6), size: 20),
+                    ],
+                  ),
+                ],
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -216,7 +635,24 @@ class _ChatScreenState extends State<ChatScreen> {
           children: [
             PremiumAvatar(username: _userName, radius: 18),
             const SizedBox(width: 12),
-            Text(_userName, style: AppTextStyles.headlineMedium),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    _userName,
+                    style: GoogleFonts.montserrat(
+                      color: AppColors.textPrimary,
+                      fontSize: 16,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  _buildSubtitleWidget(),
+                ],
+              ),
+            ),
           ],
         ),
         leading: IconButton(
@@ -257,20 +693,26 @@ class _ChatScreenState extends State<ChatScreen> {
                           vertical: 16,
                         ),
                         itemCount: _messages.length,
-                        itemBuilder: (context, index) {
-                          final m = _messages[index];
-                          final finalIsMe = m.sender == _myUsername;
-                          final remaining = _remainingSeconds(m);
-                          final showTimer = m.status == 'seen' && remaining > 0;
+                         itemBuilder: (context, index) {
+                           final m = _messages[index];
+                           final finalIsMe = m.sender == _myUsername;
+                           final remaining = _remainingSeconds(m);
+                           final showTimer = m.status == 'seen' && remaining > 0;
 
-                          return PremiumChatBubble(
-                            message: m.message,
-                            isMe: finalIsMe,
-                            time: _formatTime(m.createdAt),
-                            status: m.status,
-                            countdown: showTimer ? '$remaining' : null,
-                          );
-                        },
+                           return GestureDetector(
+                             onLongPress: m.isDeletedEveryone
+                                 ? null
+                                 : () => _showMessageActions(context, m),
+                             child: PremiumChatBubble(
+                               message: m.message,
+                               isMe: finalIsMe,
+                               time: _formatTime(m.createdAt),
+                               status: m.status,
+                               countdown: showTimer ? '$remaining' : null,
+                               isDeletedEveryone: m.isDeletedEveryone,
+                             ),
+                           );
+                         },
                       ),
               ),
               Container(

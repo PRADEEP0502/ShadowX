@@ -4,6 +4,7 @@ import 'package:google_fonts/google_fonts.dart';
 import '../services/api_service.dart';
 import '../services/auth_storage.dart';
 import '../theme/app_colors.dart';
+import '../widgets/premium_avatar.dart';
 import '../widgets/premium_gradient_button.dart';
 import '../widgets/premium_text_field.dart';
 
@@ -119,6 +120,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
       );
 
       if (!mounted) return;
+      PremiumAvatar.updateCache(updatedName, _avatar);
       setState(() {
         _isSaving = false;
         _username = updatedName;
@@ -585,7 +587,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   child: ListView.separated(
                     scrollDirection: Axis.horizontal,
                     itemCount: _avatarGradients.length,
-                    separatorBuilder: (_, __) => const SizedBox(width: 12),
+                    separatorBuilder: (context, index) => const SizedBox(width: 12),
                     itemBuilder: (context, idx) {
                       final grad = _avatarGradients[idx];
                       return GestureDetector(
@@ -666,7 +668,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   child: ListView.separated(
                     scrollDirection: Axis.horizontal,
                     itemCount: _presetPhotos.length,
-                    separatorBuilder: (_, __) => const SizedBox(width: 12),
+                    separatorBuilder: (context, index) => const SizedBox(width: 12),
                     itemBuilder: (context, idx) {
                       final url = _presetPhotos[idx];
                       return GestureDetector(

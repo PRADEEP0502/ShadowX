@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:google_fonts/google_fonts.dart';
 
 import '../services/api_service.dart';
 import '../services/auth_storage.dart';
 import '../theme/app_colors.dart';
-import '../theme/app_text_styles.dart';
 import '../widgets/premium_gradient_button.dart';
 import '../widgets/premium_text_field.dart';
 import 'premium_input_card.dart';
@@ -65,14 +65,18 @@ class _LoginScreenState extends State<LoginScreen> {
       backgroundColor: AppColors.amoledBlack,
       extendBodyBehindAppBar: true,
       appBar: AppBar(
-        title: const Text('Login'),
+        title: Text(
+          'Sign In',
+          style: GoogleFonts.montserrat(fontWeight: FontWeight.w800, fontSize: 16),
+        ),
         backgroundColor: Colors.transparent,
+        elevation: 0,
       ),
       body: Stack(
         children: [
           Positioned.fill(
             child: CustomPaint(
-              painter: _StarfieldPainter(),
+              painter: _GlowPainter(),
             ),
           ),
           SafeArea(
@@ -92,7 +96,11 @@ class _LoginScreenState extends State<LoginScreen> {
                         ),
                         child: Text(
                           'Welcome back',
-                          style: AppTextStyles.displayMedium,
+                          style: GoogleFonts.montserrat(
+                            fontSize: 28,
+                            fontWeight: FontWeight.w900,
+                            letterSpacing: 0.5,
+                          ),
                           textAlign: TextAlign.center,
                         ),
                       ),
@@ -162,17 +170,18 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 }
 
-class _StarfieldPainter extends CustomPainter {
+class _GlowPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
-    final random = DateTime.now().millisecondsSinceEpoch;
-    for (var i = 0; i < 50; i++) {
-      final x = (random * i * 0.12).remainder(size.width);
-      final y = (random * i * 0.17).remainder(size.height);
-      final paint = Paint()
-        ..color = Colors.white.withOpacity(0.08);
-      canvas.drawCircle(Offset(x, y), 1.5, paint);
-    }
+    final p1 = Paint()
+      ..color = const Color(0xFF7B2FF7).withValues(alpha: 0.12)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 100);
+    final p2 = Paint()
+      ..color = const Color(0xFF3A8DFF).withValues(alpha: 0.10)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 80);
+
+    canvas.drawCircle(Offset(size.width * 0.15, size.height * 0.2), 160, p1);
+    canvas.drawCircle(Offset(size.width * 0.85, size.height * 0.75), 180, p2);
   }
 
   @override

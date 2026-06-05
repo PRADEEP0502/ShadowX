@@ -18,6 +18,9 @@ class WSChatEvent {
   /// May be null when status is sent/delivered.
   final DateTime? seenAt;
 
+  final bool isDeletedEveryone;
+  final List<String> deletedFor;
+
   const WSChatEvent({
     required this.id,
     required this.sender,
@@ -26,6 +29,8 @@ class WSChatEvent {
     required this.createdAt,
     required this.status,
     required this.seenAt,
+    this.isDeletedEveryone = false,
+    this.deletedFor = const [],
   });
 
   static DateTime _parseDateTime(dynamic raw) {
@@ -54,6 +59,12 @@ class WSChatEvent {
             return parsed.millisecondsSinceEpoch == 0 ? null : parsed;
           })();
 
+    final isDeletedEveryone = json['is_deleted_everyone'] as bool? ?? false;
+    final deletedForRaw = json['deleted_for'];
+    final deletedFor = deletedForRaw is List
+        ? List<String>.from(deletedForRaw.map((x) => x.toString()))
+        : const <String>[];
+
     return WSChatEvent(
       id: (idRaw ?? '').toString(),
       sender: (json['sender'] ?? '').toString(),
@@ -62,8 +73,34 @@ class WSChatEvent {
       createdAt: createdAt,
       status: (json['status'] ?? 'sent').toString(),
       seenAt: seenAt,
+      isDeletedEveryone: isDeletedEveryone,
+      deletedFor: deletedFor,
     );
   }
+}
+
+class WSTypingEvent {
+  final String sender;
+  final String receiver;
+  final bool isTyping;
+
+  const WSTypingEvent({
+    required this.sender,
+    required this.receiver,
+    required this.isTyping,
+  });
+}
+
+class WSStatusEvent {
+  final String username;
+  final bool isOnline;
+  final DateTime? lastSeen;
+
+  const WSStatusEvent({
+    required this.username,
+    required this.isOnline,
+    this.lastSeen,
+  });
 }
 
 class WebSocketService {
@@ -72,8 +109,15 @@ class WebSocketService {
 
   final StreamController<WSChatEvent> _events =
       StreamController<WSChatEvent>.broadcast();
-
   Stream<WSChatEvent> get events => _events.stream;
+
+  final StreamController<WSTypingEvent> _typingEvents =
+      StreamController<WSTypingEvent>.broadcast();
+  Stream<WSTypingEvent> get typingEvents => _typingEvents.stream;
+
+  static final StreamController<WSStatusEvent> _statusController =
+      StreamController<WSStatusEvent>.broadcast();
+  static Stream<WSStatusEvent> get statusStream => _statusController.stream;
 
   // Caching factory singleton pattern
   static WebSocketService? _instance;
@@ -103,9 +147,38 @@ class WebSocketService {
       (dynamic raw) {
         try {
           final decoded = jsonDecode(raw as String) as Map<String, dynamic>;
-          final event = WSChatEvent.fromJson(decoded);
-          print('[DEBUG] Message received: ${event.sender} -> ${event.receiver} : ${event.message}');
-          _events.add(event);
+          final type = decoded['type']?.toString();
+
+          if (type == 'typing') {
+            final sender = decoded['sender']?.toString() ?? '';
+            final receiver = decoded['receiver']?.toString() ?? '';
+            _typingEvents.add(WSTypingEvent(
+              sender: sender,
+              receiver: receiver,
+              isTyping: true,
+            ));
+          } else if (type == 'status') {
+            final username = decoded['username']?.toString() ?? '';
+            final isOnline = decoded['is_online'] as bool? ?? false;
+            final lastSeenRaw = decoded['last_seen'];
+            DateTime? lastSeen;
+            if (lastSeenRaw != null) {
+              lastSeen = DateTime.tryParse(lastSeenRaw.toString());
+            }
+            _statusController.add(WSStatusEvent(
+              username: username,
+              isOnline: isOnline,
+              lastSeen: lastSeen,
+            ));
+          } else if (type == 'delete_everyone') {
+            final event = WSChatEvent.fromJson(decoded);
+            print('[DEBUG] Message deleted for everyone: ${event.id}');
+            _events.add(event);
+          } else {
+            final event = WSChatEvent.fromJson(decoded);
+            print('[DEBUG] Message received: ${event.sender} -> ${event.receiver} : ${event.message}');
+            _events.add(event);
+          }
         } catch (_) {
           // ignore malformed payload
         }
@@ -126,6 +199,19 @@ class WebSocketService {
     }
 
     channel.sink.add(jsonEncode({'receiver': receiver, 'message': message}));
+  }
+
+  void sendTyping({required String receiver}) {
+    final channel = _channel;
+    if (channel == null) {
+      print('[DEBUG] WebSocket cannot send typing, channel is null');
+      return;
+    }
+
+    channel.sink.add(jsonEncode({
+      'type': 'typing',
+      'receiver': receiver,
+    }));
   }
 
   Future<void> disconnect() async {
