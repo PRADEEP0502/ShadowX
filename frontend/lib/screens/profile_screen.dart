@@ -7,6 +7,7 @@ import '../theme/app_colors.dart';
 import '../widgets/premium_avatar.dart';
 import '../widgets/premium_gradient_button.dart';
 import '../widgets/premium_text_field.dart';
+import '../services/zego_service.dart';
 
 class ProfileScreen extends StatefulWidget {
   final String currentUsername;
@@ -888,6 +889,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
   Future<void> _logout() async {
     await AuthStorage.clear();
+    ZegoService.uninit();
     if (!mounted) return;
     Navigator.of(context).pushReplacementNamed('/login');
   }

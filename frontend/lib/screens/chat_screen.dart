@@ -1,11 +1,19 @@
 import 'dart:async';
+import 'dart:io';
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_windowmanager/flutter_windowmanager.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:intl/intl.dart';
-
+import 'package:image_picker/image_picker.dart';
+import 'package:cached_network_image/cached_network_image.dart';
+import 'package:record/record.dart';
+import 'package:zego_uikit_prebuilt_call/zego_uikit_prebuilt_call.dart';
+import 'package:screenshot_callback/screenshot_callback.dart';
+import 'package:url_launcher/url_launcher.dart';
+import 'package:zego_uikit/zego_uikit.dart' show ZegoUIKitUser, ButtonIcon;
 import '../services/active_chat_tracker.dart';
 import '../services/api_service.dart';
 import '../services/auth_storage.dart';
@@ -43,6 +51,14 @@ class _ChatScreenState extends State<ChatScreen> {
   DateTime? _otherUserLastSeen;
   bool _otherUserTyping = false;
   DateTime? _lastTypingSent;
+  bool _uploadingImage = false;
+  bool _showSendButton = false;
+  bool _isRecording = false;
+  int _recordingSeconds = 0;
+  Timer? _recordingTimer;
+  final AudioRecorder _audioRecorder = AudioRecorder();
+  bool _uploadingAudio = false;
+  final ScreenshotCallback _screenshotCallback = ScreenshotCallback();
 
   @override
   void didChangeDependencies() {
@@ -54,11 +70,35 @@ class _ChatScreenState extends State<ChatScreen> {
     ActiveChatTracker.activeUser = _userName;
   }
 
+  Future<void> _onScreenshot() async {
+    final Uri emailLaunchUri = Uri(
+      scheme: 'mailto',
+      path: 'authorized@example.com',
+      queryParameters: {
+        'subject': 'Screenshot Detected',
+        'body': 'User $_myUsername has taken a screenshot of the chat screen.',
+      },
+    );
+    try {
+      await launchUrl(emailLaunchUri);
+    } catch (_) {
+      // Silently ignore errors
+    }
+  }
+
   @override
   void initState() {
     super.initState();
 
-    FlutterWindowManager.addFlags(FlutterWindowManager.FLAG_SECURE);
+    // Android secure flag to prevent screenshots (mobile only)
+    if (!kIsWeb && Platform.isAndroid) {
+      FlutterWindowManager.addFlags(FlutterWindowManager.FLAG_SECURE);
+    }
+
+    // iOS screenshot detection
+    if (!kIsWeb && Platform.isIOS) {
+      _screenshotCallback.addListener(_onScreenshot);
+    }
 
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       _myUsername = (await AuthStorage.getUsername()) ?? '';
@@ -71,19 +111,27 @@ class _ChatScreenState extends State<ChatScreen> {
 
   @override
   void dispose() {
+    if (!kIsWeb && Platform.isIOS) {
+      _screenshotCallback.dispose();
+    }
     ActiveChatTracker.activeUser = null;
     _ticker?.cancel();
     _typingTimer?.cancel();
     _wsSub?.cancel();
     _statusSub?.cancel();
     _typingSub?.cancel();
+    _recordingTimer?.cancel();
     _messageController.removeListener(_onTextChanged);
     _messageController.dispose();
+    _audioRecorder.dispose();
     super.dispose();
   }
 
   void _onTextChanged() {
     final text = _messageController.text;
+    setState(() {
+      _showSendButton = text.trim().isNotEmpty;
+    });
     if (text.isEmpty) return;
     final now = DateTime.now();
     if (_lastTypingSent == null || now.difference(_lastTypingSent!).inSeconds >= 2) {
@@ -219,6 +267,7 @@ class _ChatScreenState extends State<ChatScreen> {
           seenAt: event.seenAt,
           isDeletedEveryone: event.isDeletedEveryone,
           deletedFor: event.deletedFor,
+          messageType: event.messageType,
         );
 
         if (idx >= 0) {
@@ -625,6 +674,156 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
+  Future<void> _pickAndSendImage() async {
+    final picker = ImagePicker();
+    final picked = await picker.pickImage(source: ImageSource.gallery);
+    if (picked == null) return;
+
+    setState(() {
+      _uploadingImage = true;
+    });
+
+    try {
+      final bytes = await picked.readAsBytes();
+      final filename = picked.name;
+      final url = await MessageService.uploadImage(bytes, filename);
+
+      final receiver = _userName;
+      _ws?.send(receiver: receiver, message: url, messageType: 'image');
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Upload failed: $e'),
+          backgroundColor: AppColors.errorRed,
+        ),
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _uploadingImage = false;
+        });
+      }
+    }
+  }
+
+  void _openFullScreenImage(String imageUrl) {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (context) {
+          return Scaffold(
+            backgroundColor: Colors.black,
+            appBar: AppBar(
+              backgroundColor: Colors.transparent,
+              elevation: 0,
+              iconTheme: const IconThemeData(color: Colors.white),
+            ),
+            body: Center(
+              child: Hero(
+                tag: imageUrl,
+                child: InteractiveViewer(
+                  panEnabled: true,
+                  minScale: 0.5,
+                  maxScale: 4.0,
+                  child: CachedNetworkImage(
+                    imageUrl: imageUrl,
+                    placeholder: (context, url) => const SizedBox(
+                      width: 40,
+                      height: 40,
+                      child: CircularProgressIndicator(color: AppColors.primaryPurple),
+                    ),
+                    errorWidget: (context, url, error) => const Icon(Icons.broken_image_rounded, color: Colors.white30, size: 64),
+                  ),
+                ),
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  Future<void> _startRecording() async {
+    try {
+      if (await _audioRecorder.hasPermission()) {
+        final tempDir = Directory.systemTemp.path;
+        final filePath = '$tempDir/voice_${DateTime.now().millisecondsSinceEpoch}.m4a';
+        
+        await _audioRecorder.start(
+          const RecordConfig(encoder: AudioEncoder.aacLc),
+          path: filePath,
+        );
+
+        setState(() {
+          _isRecording = true;
+          _recordingSeconds = 0;
+        });
+
+        _recordingTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+          if (mounted) {
+            setState(() {
+              _recordingSeconds++;
+            });
+          }
+        });
+      }
+    } catch (e) {
+      debugPrint('[DEBUG] Error starting record: $e');
+    }
+  }
+
+  Future<void> _stopRecording({required bool send}) async {
+    _recordingTimer?.cancel();
+    try {
+      final path = await _audioRecorder.stop();
+      setState(() {
+        _isRecording = false;
+        _recordingSeconds = 0;
+      });
+
+      if (send && path != null) {
+        setState(() {
+          _uploadingAudio = true;
+        });
+
+        try {
+          final file = File(path);
+          final bytes = await file.readAsBytes();
+          final url = await MessageService.uploadImage(bytes, 'voice_message.m4a');
+          
+          final receiver = _userName;
+          _ws?.send(receiver: receiver, message: url, messageType: 'voice');
+        } catch (e) {
+          if (!mounted) return;
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Failed to send voice message: $e'),
+              backgroundColor: AppColors.errorRed,
+            ),
+          );
+        } finally {
+          if (mounted) {
+            setState(() {
+              _uploadingAudio = false;
+            });
+          }
+        }
+      }
+
+      if (path != null) {
+        File(path).delete().catchError((_) {});
+      }
+    } catch (e) {
+      debugPrint('[DEBUG] Error stopping record: $e');
+    }
+  }
+
+  String _formatSeconds(int seconds) {
+    final minutes = (seconds ~/ 60).toString().padLeft(2, '0');
+    final secs = (seconds % 60).toString().padLeft(2, '0');
+    return '$minutes:$secs';
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -659,6 +858,46 @@ class _ChatScreenState extends State<ChatScreen> {
           icon: const Icon(Icons.arrow_back_rounded),
           onPressed: () => Navigator.of(context).pop(),
         ),
+        actions: [
+          // Voice Call — styled using ButtonIcon so tap area works correctly
+          Padding(
+            padding: const EdgeInsets.only(right: 4),
+            child: ZegoSendCallInvitationButton(
+              isVideoCall: false,
+              resourceID: "zego_data",
+              invitees: [ZegoUIKitUser(id: _userName, name: _userName)],
+              iconSize: const Size(26, 26),
+              buttonSize: const Size(44, 44),
+              icon: ButtonIcon(
+                icon: const Icon(
+                  Icons.call_rounded,
+                  color: Color(0xFF10B981),
+                  size: 24,
+                ),
+                backgroundColor: const Color(0xFF10B981).withValues(alpha: 0.18),
+              ),
+            ),
+          ),
+          // Video Call — styled using ButtonIcon so tap area works correctly
+          Padding(
+            padding: const EdgeInsets.only(right: 8),
+            child: ZegoSendCallInvitationButton(
+              isVideoCall: true,
+              resourceID: "zego_data",
+              invitees: [ZegoUIKitUser(id: _userName, name: _userName)],
+              iconSize: const Size(26, 26),
+              buttonSize: const Size(44, 44),
+              icon: ButtonIcon(
+                icon: const Icon(
+                  Icons.videocam_rounded,
+                  color: Color(0xFF3A8DFF),
+                  size: 24,
+                ),
+                backgroundColor: const Color(0xFF3A8DFF).withValues(alpha: 0.18),
+              ),
+            ),
+          ),
+        ],
       ),
       body: Stack(
         children: [
@@ -710,6 +949,8 @@ class _ChatScreenState extends State<ChatScreen> {
                                status: m.status,
                                countdown: showTimer ? '$remaining' : null,
                                isDeletedEveryone: m.isDeletedEveryone,
+                               messageType: m.messageType,
+                               onImageTap: () => _openFullScreenImage(m.message),
                              ),
                            );
                          },
@@ -740,34 +981,84 @@ class _ChatScreenState extends State<ChatScreen> {
                         ),
                         child: Row(
                           children: [
-                            const SizedBox(width: 12),
-                            Expanded(
-                              child: TextField(
-                                controller: _messageController,
-                                style: const TextStyle(
-                                  color: AppColors.textPrimary,
+                            if (_isRecording) ...[
+                              const SizedBox(width: 12),
+                              const _PulseDot(),
+                              const SizedBox(width: 8),
+                              Text(
+                                'Recording ${_formatSeconds(_recordingSeconds)}',
+                                style: GoogleFonts.outfit(
+                                  color: Colors.white,
                                   fontWeight: FontWeight.w500,
+                                  fontSize: 14,
                                 ),
-                                decoration: InputDecoration(
-                                  hintText: 'Type a message...',
-                                  hintStyle: TextStyle(
-                                    color: AppColors.textHint,
-                                  ),
-                                  border: InputBorder.none,
-                                  contentPadding: const EdgeInsets.symmetric(
-                                    vertical: 12,
-                                  ),
+                              ),
+                              const Spacer(),
+                              IconButton(
+                                icon: const Icon(
+                                  Icons.delete_rounded,
+                                  color: AppColors.errorRed,
+                                  size: 22,
                                 ),
-                                onSubmitted: (_) => _send(),
+                                onPressed: () => _stopRecording(send: false),
                               ),
-                            ),
-                            IconButton(
-                              icon: const Icon(
-                                Icons.send_rounded,
-                                color: AppColors.primaryPurple,
+                              IconButton(
+                                icon: const Icon(
+                                  Icons.send_rounded,
+                                  color: AppColors.primaryPurple,
+                                  size: 22,
+                                ),
+                                onPressed: () => _stopRecording(send: true),
                               ),
-                              onPressed: _send,
-                            ),
+                            ] else ...[
+                              const SizedBox(width: 4),
+                              IconButton(
+                                icon: const Icon(
+                                  Icons.image_rounded,
+                                  color: AppColors.textSecondary,
+                                  size: 22,
+                                ),
+                                onPressed: _pickAndSendImage,
+                              ),
+                              const SizedBox(width: 4),
+                              Expanded(
+                                child: TextField(
+                                  controller: _messageController,
+                                  style: const TextStyle(
+                                    color: AppColors.textPrimary,
+                                    fontWeight: FontWeight.w500,
+                                  ),
+                                  decoration: InputDecoration(
+                                    hintText: 'Type a message...',
+                                    hintStyle: TextStyle(
+                                      color: AppColors.textHint,
+                                    ),
+                                    border: InputBorder.none,
+                                    contentPadding: const EdgeInsets.symmetric(
+                                      vertical: 12,
+                                    ),
+                                  ),
+                                  onSubmitted: (_) => _send(),
+                                ),
+                              ),
+                              if (_showSendButton)
+                                IconButton(
+                                  icon: const Icon(
+                                    Icons.send_rounded,
+                                    color: AppColors.primaryPurple,
+                                  ),
+                                  onPressed: _send,
+                                )
+                              else
+                                IconButton(
+                                  icon: const Icon(
+                                    Icons.mic_rounded,
+                                    color: AppColors.primaryPurple,
+                                    size: 22,
+                                  ),
+                                  onPressed: () => _startRecording(),
+                                ),
+                            ],
                           ],
                         ),
                       ),
@@ -777,7 +1068,124 @@ class _ChatScreenState extends State<ChatScreen> {
               ),
             ],
           ),
+          if (_uploadingImage)
+            Positioned.fill(
+              child: Container(
+                color: Colors.black54,
+                child: Center(
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+                    decoration: BoxDecoration(
+                      color: AppColors.cardDark,
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(color: AppColors.glassBorder.withOpacity(0.3)),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(
+                            color: AppColors.primaryPurple,
+                            strokeWidth: 2,
+                          ),
+                        ),
+                        const SizedBox(width: 16),
+                        Text(
+                          'Uploading image...',
+                          style: GoogleFonts.montserrat(
+                            color: Colors.white,
+                            fontWeight: FontWeight.w600,
+                            fontSize: 14,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          if (_uploadingAudio)
+            Positioned.fill(
+              child: Container(
+                color: Colors.black54,
+                child: Center(
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+                    decoration: BoxDecoration(
+                      color: AppColors.cardDark,
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(color: AppColors.glassBorder.withOpacity(0.3)),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(
+                            color: AppColors.primaryPurple,
+                            strokeWidth: 2,
+                          ),
+                        ),
+                        const SizedBox(width: 16),
+                        Text(
+                          'Sending voice note...',
+                          style: GoogleFonts.montserrat(
+                            color: Colors.white,
+                            fontWeight: FontWeight.w600,
+                            fontSize: 14,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
         ],
+      ),
+    );
+  }
+}
+
+class _PulseDot extends StatefulWidget {
+  const _PulseDot();
+
+  @override
+  State<_PulseDot> createState() => _PulseDotState();
+}
+
+class _PulseDotState extends State<_PulseDot> with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1000),
+    )..repeat(reverse: true);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return FadeTransition(
+      opacity: Tween<double>(begin: 0.3, end: 1.0).animate(_controller),
+      child: Container(
+        width: 8,
+        height: 8,
+        decoration: const BoxDecoration(
+          color: AppColors.errorRed,
+          shape: BoxShape.circle,
+        ),
       ),
     );
   }

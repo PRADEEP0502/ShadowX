@@ -12,6 +12,7 @@ router = APIRouter()
 class IncomingWSMessage(BaseModel):
     receiver: str
     message: str
+    message_type: str = "text"
 
 
 async def broadcast_status(username: str, is_online: bool):
@@ -103,18 +104,20 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
                 "sender": username,
                 "receiver": incoming.receiver,
                 "message": incoming.message,
+                "message_type": incoming.message_type,
                 "created_at": now,
                 "status": status,
                 "seen_at": None,
             }
             res = messages_collection().insert_one(doc)
-            print(f"[DEBUG] Message saved: {username} -> {incoming.receiver} : {incoming.message}")
+            print(f"[DEBUG] Message saved: {username} -> {incoming.receiver} : {incoming.message} ({incoming.message_type})")
 
             payload = {
                 "_id": str(res.inserted_id),
                 "sender": username,
                 "receiver": incoming.receiver,
                 "message": incoming.message,
+                "message_type": incoming.message_type,
                 "created_at": now.isoformat() + "Z",
                 "status": status,
                 "seen_at": None,

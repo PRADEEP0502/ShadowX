@@ -1,24 +1,7 @@
 import os
 from datetime import datetime, timedelta
-
-# Patch bcrypt to add missing __about__ attribute for passlib compatibility
 import bcrypt
-
-if not hasattr(bcrypt, "__about__"):
-    class About:
-        # Pylance may not know about bcrypt's runtime attributes.
-        __version__ = getattr(bcrypt, "__version__", "")  # type: ignore[attr-defined]
-
-    bcrypt.__about__ = About()
-
-
 from jose import jwt
-from passlib.context import CryptContext
-
-pwd_context = CryptContext(
-    schemes=["bcrypt"],
-    deprecated="auto",
-)
 
 SECRET_KEY: str = os.getenv("JWT_SECRET") or ""
 ALGORITHM = "HS256"
@@ -27,7 +10,6 @@ ALGORITHM = "HS256"
 # a clear error only when token generation is attempted.
 if not SECRET_KEY:
     SECRET_KEY = "__MISSING_JWT_SECRET__"
-
 
 
 def _truncate_password_72_bytes(password: str) -> str:
@@ -48,15 +30,20 @@ def _truncate_password_72_bytes(password: str) -> str:
     return s
 
 
-def hash_password(password: str):
+def hash_password(password: str) -> str:
     # Ensure bcrypt backend never sees >72 bytes.
-    return pwd_context.hash(_truncate_password_72_bytes(password))
+    truncated = _truncate_password_72_bytes(password)
+    salt = bcrypt.gensalt()
+    hashed = bcrypt.hashpw(truncated.encode("utf-8"), salt)
+    return hashed.decode("utf-8")
 
 
-def verify_password(password: str, hashed_password: str):
-    return pwd_context.verify(
-        _truncate_password_72_bytes(password), hashed_password
-    )
+def verify_password(password: str, hashed_password: str) -> bool:
+    try:
+        truncated = _truncate_password_72_bytes(password)
+        return bcrypt.checkpw(truncated.encode("utf-8"), hashed_password.encode("utf-8"))
+    except Exception:
+        return False
 
 
 def create_access_token(data: dict):

@@ -12,9 +12,11 @@ import '../services/message_service.dart';
 import '../services/home_conversation_ws_service.dart';
 import '../services/local_notifications.dart';
 import '../services/websocket_service.dart';
+import '../services/zego_service.dart';
 import '../theme/app_colors.dart';
 import '../widgets/floating_search_bar.dart';
 import '../widgets/premium_conversation_tile.dart';
+import 'calls_screen.dart';
 import 'profile_screen.dart';
 import 'package:google_fonts/google_fonts.dart';
 
@@ -110,9 +112,13 @@ class _HomeScreenState extends State<HomeScreen> {
         final isCurrentlyChatting = ActiveChatTracker.activeUser == other;
         final increment = (isReceived && !isCurrentlyChatting && !event.isDeletedEveryone) ? 1 : 0;
 
+        final lastMsgText = event.messageType == 'image'
+            ? '📷 Photo'
+            : (event.messageType == 'voice' ? '🎤 Voice Message' : event.message);
+
         _conversationByUser[other] = Conversation(
           username: other,
-          lastMessage: event.message,
+          lastMessage: lastMsgText,
           timestamp: event.createdAt,
           unreadCount: currentUnread + increment,
         );
@@ -124,11 +130,14 @@ class _HomeScreenState extends State<HomeScreen> {
           return;
         }
         try {
-          print('[DEBUG] Notification triggered: ${event.sender} -> ${event.message}');
+          final notifyBody = event.messageType == 'image'
+              ? '📷 Photo'
+              : (event.messageType == 'voice' ? '🎤 Voice Message' : event.message);
+          print('[DEBUG] Notification triggered: ${event.sender} -> $notifyBody');
           LocalNotificationService.showMessageNotification(
             id: DateTime.now().millisecondsSinceEpoch.remainder(1000000),
             title: event.sender,
-            body: event.message,
+            body: notifyBody,
           );
         } catch (_) {}
       }
@@ -356,6 +365,9 @@ class _HomeScreenState extends State<HomeScreen> {
         _myUsername = myUsername;
       });
 
+      // Initialize ZegoCloud for calls
+      ZegoService.init(username: myUsername);
+
       await _connectWebSocket(myUsername);
       await _loadConversations();
     });
@@ -365,8 +377,6 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget build(BuildContext context) {
     final conversations = _conversationByUser.values.toList()
       ..sort((a, b) => b.timestamp.compareTo(a.timestamp));
-
-    final isChatsTab = _currentTabIndex == 0;
 
     return Scaffold(
       backgroundColor: AppColors.amoledBlack,
@@ -381,7 +391,11 @@ class _HomeScreenState extends State<HomeScreen> {
             Rect.fromLTWH(0, 0, bounds.width, bounds.height),
           ),
           child: Text(
-            isChatsTab ? 'ShadowChat X' : 'My Profile',
+            _currentTabIndex == 0
+                ? 'ShadowChat X'
+                : _currentTabIndex == 1
+                    ? 'Calls'
+                    : 'My Profile',
             style: GoogleFonts.montserrat(fontWeight: FontWeight.w900, letterSpacing: 0.5),
           ),
         ),
@@ -432,7 +446,7 @@ class _HomeScreenState extends State<HomeScreen> {
                               ],
                             ),
                             GestureDetector(
-                              onTap: () => setState(() => _currentTabIndex = 1),
+                              onTap: () => setState(() => _currentTabIndex = 2),
                               child: Container(
                                 decoration: BoxDecoration(
                                   shape: BoxShape.circle,
@@ -492,7 +506,9 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ),
               ),
-              // Tab 1: Profile
+              // Tab 1: Calls
+              CallsScreen(myUsername: _myUsername),
+              // Tab 2: Profile
               ProfileScreen(
                 currentUsername: _myUsername,
                 onUsernameChanged: _handleUsernameChanged,
@@ -524,7 +540,8 @@ class _HomeScreenState extends State<HomeScreen> {
             mainAxisAlignment: MainAxisAlignment.spaceAround,
             children: [
               _buildNavItem(0, Icons.chat_bubble_outline_rounded, Icons.chat_bubble_rounded, 'Chats'),
-              _buildNavItem(1, Icons.person_outline_rounded, Icons.person_rounded, 'Profile'),
+              _buildNavItem(1, Icons.call_outlined, Icons.call_rounded, 'Calls'),
+              _buildNavItem(2, Icons.person_outline_rounded, Icons.person_rounded, 'Profile'),
             ],
           ),
         ),

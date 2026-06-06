@@ -68,3 +68,7 @@ def messages_collection():
 def otps_collection():
     return _get_db()["otps"]
 
+
+def calls_collection():
+    return _get_db()["calls"]
+

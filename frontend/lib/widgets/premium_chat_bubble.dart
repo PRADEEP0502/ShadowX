@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 import '../theme/app_colors.dart';
+import 'premium_voice_bubble.dart';
 
 class PremiumChatBubble extends StatelessWidget {
   final String message;
@@ -8,6 +10,8 @@ class PremiumChatBubble extends StatelessWidget {
   final String? status;
   final String? countdown;
   final bool isDeletedEveryone;
+  final String messageType;
+  final VoidCallback? onImageTap;
 
   const PremiumChatBubble({
     super.key,
@@ -17,6 +21,8 @@ class PremiumChatBubble extends StatelessWidget {
     this.status,
     this.countdown,
     this.isDeletedEveryone = false,
+    this.messageType = 'text',
+    this.onImageTap,
   });
 
   @override
@@ -70,7 +76,7 @@ class PremiumChatBubble extends StatelessWidget {
               mainAxisSize: MainAxisSize.min,
               children: [
                 if (isDeletedEveryone)
-                  Row(
+                  const Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       Icon(
@@ -78,7 +84,7 @@ class PremiumChatBubble extends StatelessWidget {
                         color: Colors.white38,
                         size: 15,
                       ),
-                      const SizedBox(width: 6),
+                      SizedBox(width: 6),
                       Text(
                         'This message was deleted',
                         style: TextStyle(
@@ -89,6 +95,49 @@ class PremiumChatBubble extends StatelessWidget {
                         ),
                       ),
                     ],
+                  )
+                else if (messageType == 'image')
+                  GestureDetector(
+                    onTap: onImageTap,
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(12),
+                      child: Hero(
+                        tag: message,
+                        child: CachedNetworkImage(
+                          imageUrl: message,
+                          fit: BoxFit.cover,
+                          placeholder: (context, url) => Container(
+                            width: 200,
+                            height: 150,
+                            color: Colors.black12,
+                            alignment: Alignment.center,
+                            child: const SizedBox(
+                              width: 24,
+                              height: 24,
+                              child: CircularProgressIndicator(
+                                color: AppColors.primaryPurple,
+                                strokeWidth: 2,
+                              ),
+                            ),
+                          ),
+                          errorWidget: (context, url, error) => Container(
+                            width: 200,
+                            height: 150,
+                            color: Colors.black26,
+                            child: const Icon(
+                              Icons.broken_image_rounded,
+                              color: Colors.white24,
+                              size: 36,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  )
+                else if (messageType == 'voice')
+                  PremiumVoiceBubble(
+                    audioUrl: message,
+                    isMe: isMe,
                   )
                 else
                   Text(

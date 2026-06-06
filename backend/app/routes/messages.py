@@ -1,10 +1,21 @@
-from fastapi import APIRouter, HTTPException
+import os
+from fastapi import APIRouter, HTTPException, UploadFile, File, Request
 from pydantic import BaseModel
 from datetime import datetime, timedelta
+import cloudinary
+import cloudinary.uploader
 
 from app.database import messages_collection
 
 router = APIRouter()
+
+# Configure Cloudinary
+cloudinary.config(
+    cloud_name=os.getenv("CLOUDINARY_CLOUD_NAME"),
+    api_key=os.getenv("CLOUDINARY_API_KEY"),
+    api_secret=os.getenv("CLOUDINARY_API_SECRET"),
+    secure=True
+)
 
 VANISH_SECONDS = 60
 
@@ -17,6 +28,7 @@ class SendMessageRequest(BaseModel):
     sender: str
     receiver: str
     message: str
+    message_type: str = "text"
 
 
 @router.post("/messages")
@@ -36,13 +48,14 @@ def send_message(req: SendMessageRequest):
         "sender": req.sender,
         "receiver": req.receiver,
         "message": req.message,
+        "message_type": req.message_type,
         "created_at": now,
         "status": status,
         "seen_at": None,
     }
 
     res = messages_collection().insert_one(doc)
-    print(f"[DEBUG] Message saved: {req.sender} -> {req.receiver} : {req.message}")
+    print(f"[DEBUG] Message saved: {req.sender} -> {req.receiver} : {req.message} ({req.message_type})")
 
     # Return the created record fields; include Mongo _id.
     return {
@@ -50,6 +63,7 @@ def send_message(req: SendMessageRequest):
         "sender": req.sender,
         "receiver": req.receiver,
         "message": req.message,
+        "message_type": req.message_type,
         "created_at": now.isoformat() + "Z",
         "status": status,
         "seen_at": None,
@@ -108,6 +122,7 @@ def get_messages(user1: str, user2: str):
             
         m["is_deleted_everyone"] = m.get("is_deleted_everyone", False)
         m["deleted_for"] = m.get("deleted_for", [])
+        m["message_type"] = m.get("message_type", "text")
 
     return messages
 
@@ -275,5 +290,45 @@ def delete_conversation(user1: str, user2: str):
     })
     print(f"[DEBUG] Deleted {res.deleted_count} messages in conversation between {user1} and {user2}")
     return {"ok": True, "deleted_count": res.deleted_count}
+
+
+@router.post("/messages/upload")
+async def upload_image(request: Request, file: UploadFile = File(...)):
+    """Upload an image to Cloudinary and return the secure URL.
+    
+    If Cloudinary is not configured, saves the image locally and returns a local static URL.
+    """
+    try:
+        cloud_name = os.getenv("CLOUDINARY_CLOUD_NAME")
+        api_key = os.getenv("CLOUDINARY_API_KEY")
+        api_secret = os.getenv("CLOUDINARY_API_SECRET")
+
+        if cloud_name and api_key and api_secret:
+            content = await file.read()
+            res = cloudinary.uploader.upload(content, folder="shadowchatx", resource_type="auto")
+            return {"url": res.get("secure_url")}
+        else:
+            print("[DEBUG] Cloudinary not fully configured. Falling back to local static upload.")
+            static_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static", "uploads")
+            os.makedirs(static_dir, exist_ok=True)
+            
+            import uuid
+            ext = os.path.splitext(file.filename)[1] or ".png"
+            unique_filename = f"{uuid.uuid4()}{ext}"
+            filepath = os.path.join(static_dir, unique_filename)
+            
+            content = await file.read()
+            with open(filepath, "wb") as f:
+                f.write(content)
+            
+            base_url = str(request.base_url)
+            url = f"{base_url.rstrip('/')}/static/uploads/{unique_filename}"
+            print(f"[DEBUG] Local image saved to: {filepath}, served at: {url}")
+            return {"url": url}
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Image upload failed: {str(e)}"
+        )
 
 

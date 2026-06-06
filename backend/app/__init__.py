@@ -1,6 +1,8 @@
 from fastapi import FastAPI
-from app.routes import users, auth, messages, status, websocket, conversations, otp
+from fastapi.staticfiles import StaticFiles
+import os
 
+from app.routes import users, auth, messages, status, websocket, conversations, otp, calls
 from app.cors import setup_cors
 
 from fastapi.exceptions import RequestValidationError
@@ -8,6 +10,11 @@ from fastapi.responses import JSONResponse
 
 app = FastAPI()
 setup_cors(app)
+
+# Ensure app/static/uploads directory exists and mount it
+static_dir = os.path.join(os.path.dirname(__file__), "static")
+os.makedirs(os.path.join(static_dir, "uploads"), exist_ok=True)
+app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request, exc):
@@ -33,6 +40,7 @@ app.include_router(status.router)
 app.include_router(websocket.router)
 app.include_router(conversations.router)
 app.include_router(otp.router)
+app.include_router(calls.router)
 
 
 

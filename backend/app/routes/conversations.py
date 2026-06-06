@@ -43,7 +43,7 @@ def get_conversations(username: str):
             "$or": [{"sender": username}, {"receiver": username}],
             "deleted_for": {"$ne": username}
         },
-        {"sender": 1, "receiver": 1, "message": 1, "created_at": 1, "status": 1},
+        {"sender": 1, "receiver": 1, "message": 1, "created_at": 1, "status": 1, "message_type": 1},
     ))
 
     # Unread count per other participant (WhatsApp-style badge)
@@ -60,6 +60,10 @@ def get_conversations(username: str):
         message = doc.get("message")
         message = message if message is not None else ""
         message = str(message)
+        if doc.get("message_type") == "image":
+            message = "📷 Photo"
+        elif doc.get("message_type") == "voice":
+            message = "🎤 Voice Message"
         created_at = doc.get("created_at")
 
         if sender == username:

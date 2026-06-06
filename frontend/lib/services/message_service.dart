@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:http/http.dart' as http;
 
@@ -19,6 +20,7 @@ class ChatMessage {
 
   final bool isDeletedEveryone;
   final List<String> deletedFor;
+  final String messageType;
 
   const ChatMessage({
     required this.sender,
@@ -30,6 +32,7 @@ class ChatMessage {
     required this.id,
     this.isDeletedEveryone = false,
     this.deletedFor = const [],
+    this.messageType = 'text',
   });
 
   static DateTime _parseDateTime(dynamic raw) {
@@ -67,6 +70,8 @@ class ChatMessage {
         ? List<String>.from(deletedForRaw.map((x) => x.toString()))
         : const <String>[];
 
+    final messageType = (json['message_type'] ?? 'text').toString();
+
     return ChatMessage(
       id: (json['_id'] ?? json['id'])?.toString(),
       sender: (json['sender'] ?? '').toString(),
@@ -77,6 +82,7 @@ class ChatMessage {
       seenAt: seenAt,
       isDeletedEveryone: isDeletedEveryone,
       deletedFor: deletedFor,
+      messageType: messageType,
     );
   }
 }
@@ -186,5 +192,33 @@ class MessageService {
     if (response.statusCode >= 400) {
       throw Exception('Failed to delete conversation');
     }
+  }
+
+  static Future<String> uploadImage(Uint8List bytes, String filename) async {
+    final uri = Uri.parse('${ApiConstants.baseUrl}/messages/upload');
+    final request = http.MultipartRequest('POST', uri);
+
+    request.files.add(
+      http.MultipartFile.fromBytes(
+        'file',
+        bytes,
+        filename: filename,
+      ),
+    );
+
+    final streamedResponse = await request.send();
+    final response = await http.Response.fromStream(streamedResponse);
+
+    if (response.statusCode >= 400) {
+      try {
+        final detail = jsonDecode(response.body)['detail'] ?? 'Failed to upload image';
+        throw Exception(detail);
+      } catch (_) {
+        throw Exception('Failed to upload image');
+      }
+    }
+
+    final data = jsonDecode(response.body) as Map<String, dynamic>;
+    return data['url'] as String;
   }
 }

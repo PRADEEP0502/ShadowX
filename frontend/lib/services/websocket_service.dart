@@ -20,6 +20,7 @@ class WSChatEvent {
 
   final bool isDeletedEveryone;
   final List<String> deletedFor;
+  final String messageType;
 
   const WSChatEvent({
     required this.id,
@@ -31,6 +32,7 @@ class WSChatEvent {
     required this.seenAt,
     this.isDeletedEveryone = false,
     this.deletedFor = const [],
+    this.messageType = 'text',
   });
 
   static DateTime _parseDateTime(dynamic raw) {
@@ -65,6 +67,8 @@ class WSChatEvent {
         ? List<String>.from(deletedForRaw.map((x) => x.toString()))
         : const <String>[];
 
+    final messageType = (json['message_type'] ?? 'text').toString();
+
     return WSChatEvent(
       id: (idRaw ?? '').toString(),
       sender: (json['sender'] ?? '').toString(),
@@ -75,6 +79,7 @@ class WSChatEvent {
       seenAt: seenAt,
       isDeletedEveryone: isDeletedEveryone,
       deletedFor: deletedFor,
+      messageType: messageType,
     );
   }
 }
@@ -191,14 +196,22 @@ class WebSocketService {
     );
   }
 
-  void send({required String receiver, required String message}) {
+  void send({
+    required String receiver,
+    required String message,
+    String messageType = 'text',
+  }) {
     final channel = _channel;
     if (channel == null) {
       print('[DEBUG] WebSocket cannot send, channel is null');
       return;
     }
 
-    channel.sink.add(jsonEncode({'receiver': receiver, 'message': message}));
+    channel.sink.add(jsonEncode({
+      'receiver': receiver,
+      'message': message,
+      'message_type': messageType,
+    }));
   }
 
   void sendTyping({required String receiver}) {
